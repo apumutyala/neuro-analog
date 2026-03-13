@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuro-analog"
+version = "0.1.0"
+description = "Cross-architecture neural-to-analog compilation framework"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Apuroop Mutyala"}]
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.36",
+    "numpy>=1.24",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+diffusion = ["diffusers>=0.25"]
+ssm = ["mamba-ssm>=1.0"]
+flow = ["diffusers>=0.28"]
+jax = ["jax>=0.4", "jaxlib>=0.4"]
+full = ["diffusers>=0.28", "mamba-ssm>=1.0", "jax>=0.4", "plotly>=5.18"]
+dev = ["pytest>=7.0", "ruff>=0.1", "mypy>=1.7"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["neuro_analog*"]
