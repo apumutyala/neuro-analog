@@ -68,13 +68,18 @@ def _load_mnist_8x8(split="train", n=None):
         x = torch.stack([dataset[i][0].flatten() for i in range(len(dataset) if n is None else min(n, len(dataset)))])
         return x
     except Exception:
-        # Fallback: Gaussian blobs simulating two digit clusters
-        rng = np.random.default_rng(42 if split == "train" else 7)
-        n = n or (5000 if split == "train" else 500)
-        centers = rng.uniform(-0.5, 0.5, size=(10, _IMG_DIM))
-        labels = rng.integers(0, 10, size=n)
-        x = centers[labels] + rng.normal(0, 0.15, size=(n, _IMG_DIM))
-        return torch.tensor(x, dtype=torch.float32)
+        pass
+
+    # sklearn digits: 1797 samples of 8x8 images (0–16), normalize to [-1, 1]
+    from sklearn.datasets import load_digits
+    data = load_digits()
+    X = (data.data.astype(np.float32) / 8.0) - 1.0  # [0,16] → [-1, 1]
+    rng = np.random.default_rng(42)
+    perm = rng.permutation(len(X))
+    split_idx = int(len(X) * 0.8)
+    idx = perm[:split_idx] if split == "train" else perm[split_idx:]
+    n = n or len(idx)
+    return torch.tensor(X[idx[:n]])
 
 def _get_data():
     X_train = _load_mnist_8x8("train", n=5000)
