@@ -42,6 +42,11 @@ _IMG_DIM = 64
 _N_CLASSES = 10
 
 def _load_mnist_8x8(split="train", n=None):
+    """Load 8x8 digit images.
+
+    Primary: sklearn.datasets.load_digits() — built-in 8x8 digits, no download.
+    Fallback: torchvision MNIST resized to 8x8 (requires torchvision + network).
+    """
     try:
         import torchvision
         import torchvision.transforms as T
@@ -55,14 +60,24 @@ def _load_mnist_8x8(split="train", n=None):
         y = torch.tensor([dataset[i][1] for i in range(min(n, len(dataset)))])
         return x, y
     except Exception:
-        rng = np.random.default_rng(42 if split == "train" else 7)
-        n = n or (5000 if split == "train" else 500)
-        x = rng.normal(0, 0.5, size=(n, _IMG_DIM)).astype(np.float32)
-        y = rng.integers(0, _N_CLASSES, size=n)
-        return torch.tensor(x), torch.tensor(y)
+        pass
+
+    # sklearn digits: 1797 samples of 8x8 images, 10 classes, no download required
+    from sklearn.datasets import load_digits
+    data = load_digits()
+    X = (data.data.astype(np.float32) / 8.0) - 1.0   # scale [0,16] → [-1, 1]
+    y = data.target.astype(np.int64)
+
+    rng = np.random.default_rng(42)
+    perm = rng.permutation(len(X))
+    split_idx = int(len(X) * 0.8)  # 1437 train / 360 test
+    idx = perm[:split_idx] if split == "train" else perm[split_idx:]
+    n = n or len(idx)
+    idx = idx[:n]
+    return torch.tensor(X[idx]), torch.tensor(y[idx])
 
 def _get_data():
-    return _load_mnist_8x8("train", 5000), _load_mnist_8x8("test", 500)
+    return _load_mnist_8x8("train"), _load_mnist_8x8("test")
 
 
 # ── Model ─────────────────────────────────────────────────────────────────
@@ -80,9 +95,10 @@ class _DEQClassifier(nn.Module):
         self.W_x = nn.Linear(x_dim, z_dim, bias=True)
         # Readout: z* → class logits (stays digital — only classifies, not dynamics)
         self.readout = nn.Linear(z_dim, n_classes)
-        # Initialize W_z with small weights to ensure rho < 1 initially
+        # Initialize W_z small so spectral norm starts < 1 (contraction guarantee)
         nn.init.normal_(self.W_z.weight, std=0.1)
-        nn.init.normal_(self.W_x.weight, std=0.1)
+        # W_x uses default kaiming init — it maps input → hidden and doesn't
+        # affect convergence of the fixed-point iteration (only W_z does)
         
         # Apply spectral normalization to W_z to guarantee contraction (rho < 1)
         # This ensures fixed-point iteration converges even under analog mismatch
@@ -142,10 +158,11 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     (X_train, y_train), _ = _get_data()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.CrossEntropyLoss()
+    n_epochs = 500
     batch_size = 128
-    n_epochs = 200
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
+    criterion = nn.CrossEntropyLoss()
 
     model.train()
     for epoch in range(n_epochs):
@@ -156,8 +173,9 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        scheduler.step()
 
-        if (epoch + 1) % 50 == 0:
+        if (epoch + 1) % 100 == 0:
             acc = evaluate(model)
             print(f"  [DEQ] epoch {epoch+1}/{n_epochs}: loss={loss.item():.4f}, acc={acc:.3f}")
 
