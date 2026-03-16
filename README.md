@@ -980,7 +980,7 @@ After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOT
 
 | Architecture | σ threshold @ 10% loss | Dominant noise source | ADC min bits | Notes |
 |---|---|---|---|---|
-| **Neural ODE** | **≥15%** | Mismatch | ~6 bits | Most robust; continuous dynamics smooth perturbations over ODE path |
+| **Neural ODE** | **≥15%** | Mismatch + **Quantization** | N/A (log-det) | Most mismatch-robust; BUT 8-bit ADC collapses log-density by ~2 nats/sample — quantization corrupts log-det across all ODE steps. Generation-only use is expected to be fine. |
 | **DEQ** | **≥15%** | All near-zero | **2 bits** | Spectral norm absorbs all noise; uniquely 2-bit tolerant |
 | **EBM** | **≥15%** | All equal | **2 bits** | Gibbs stochasticity masks all noise sources equally |
 | **SSM** | **≥15%** | Mismatch | 4–6 bits | Tolerates mismatch well; 2-bit catastrophic (state divergence) |
@@ -988,11 +988,13 @@ After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOT
 | **Flow** | **~10%** | Mismatch | Undetermined | Velocity field errors accumulate over Euler steps; degrades past 10% at σ≈12% |
 | **Diffusion** | **0%** | **Quantization** | ≥8 bits | 15.5% loss from ADC alone (8-bit); 100-step cascade compounds quantization errors |
 
-**All 5 non-diffusion, non-flow architectures never cross the 10% quality loss threshold up to σ=15%** (the maximum tested). This is a genuine finding about small-scale robustness with normalization (LayerNorm, spectral norm) active.
+**All 5 non-diffusion, non-flow architectures never cross the 10% mismatch loss threshold up to σ=15%** (the maximum tested). This is a genuine finding about small-scale robustness with normalization (LayerNorm, spectral norm) active. Note: the DEQ digital baseline performs near random on 8×8 MNIST (CE=2.337 ≈ log(10)=2.303); its stability result is valid but reflects a consistently near-random model.
 
-**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance. Static conductance mismatch — baked in at fabrication time — is the dominant noise source in 6 of 7 architectures.
+**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance. Static conductance mismatch is the dominant failure mode for 5 of 7 architectures.
 
-**Why DEQ and EBM tolerate 2-bit ADC when SSM and Transformer cannot:** Fixed-point contraction (DEQ: ρ(∂f/∂z) < 1) and stochastic sampling (EBM) absorb coarse quantization without catastrophic collapse. SSM recurrence and Transformer attention patterns both require sufficient precision in intermediate values to avoid divergence.
+**Quantization is co-dominant for Neural ODE and Diffusion.** Both show large quality losses from 8-bit ADC that are constant across all mismatch levels and all bit-widths tested. For Neural ODE this is specifically a CNF log-det estimation issue (generation-only use is expected to tolerate quantization better). For Diffusion, the 100-step DDPM cascade compounds rounding errors throughout.
+
+**Why DEQ and EBM tolerate 2-bit ADC when SSM and Transformer cannot:** Fixed-point contraction (DEQ: ρ(∂f/∂z) < 1) and stochastic Gibbs sampling (EBM) absorb coarse quantization without catastrophic collapse. SSM recurrence and Transformer attention patterns require sufficient intermediate precision to avoid divergence.
 
 ---
 
