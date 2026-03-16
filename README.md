@@ -976,21 +976,23 @@ The seven architectures (Neural ODE, SSM, Diffusion, Flow, EBM, Transformer, DEQ
 
 ## Findings Summary
 
-After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOTE §6 for the full errata):
+After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOTE §6 for full errata, §6.5 for confirmed result tables):
 
 | Architecture | σ threshold @ 10% loss | Dominant noise source | ADC min bits | Notes |
 |---|---|---|---|---|
-| **Neural ODE** | **~15%** | Mismatch | 6 bits | Uniquely robust; continuous dynamics smooth perturbations |
-| **SSM** | ~3% | Mismatch | 8 bits (catastrophic at 2) | State recurrence amplifies error; SSM-specific ADC failure |
-| **EBM** | ~5% | All equal | 4 bits | Gibbs noise masks all sources equally |
-| **DEQ** | ~8% | Mismatch | 4 bits | Spectral norm absorbs σ up to ρ(W_z)·σ ≈ 1 |
-| **Flow** | ~2% | Mismatch | 8 bits | Velocity field corruption accumulates over Euler steps |
-| **Transformer** | 0% (smooth) | Mismatch | 4–8 bits | Degrades from σ=0% but gracefully |
-| **Diffusion** | 0% (smooth) | Mismatch + Quantization | 8+ bits | 100-step cascade compounds errors; precision-sensitive |
+| **Neural ODE** | **≥15%** | Mismatch | ~6 bits | Most robust; continuous dynamics smooth perturbations over ODE path |
+| **DEQ** | **≥15%** | All near-zero | **2 bits** | Spectral norm absorbs all noise; uniquely 2-bit tolerant |
+| **EBM** | **≥15%** | All equal | **2 bits** | Gibbs stochasticity masks all noise sources equally |
+| **SSM** | **≥15%** | Mismatch | 4–6 bits | Tolerates mismatch well; 2-bit catastrophic (state divergence) |
+| **Transformer** | **≥15%** | Mismatch | 4 bits | 3.2% loss at σ=15%; 2-bit catastrophic (attention collapse) |
+| **Flow** | **~10%** | Mismatch | Undetermined | Velocity field errors accumulate over Euler steps; degrades past 10% at σ≈12% |
+| **Diffusion** | **0%** | **Quantization** | ≥8 bits | 15.5% loss from ADC alone (8-bit); 100-step cascade compounds quantization errors |
 
-**"0% threshold" means smooth degradation from σ=0, not catastrophic failure.** This is actually good news for Shem: a smooth degradation curve has a well-defined gradient for adjoint optimization to follow.
+**All 5 non-diffusion, non-flow architectures never cross the 10% quality loss threshold up to σ=15%** (the maximum tested). This is a genuine finding about small-scale robustness with normalization (LayerNorm, spectral norm) active.
 
-**Why the 4 deterministic-metric models (Transformer, SSM, DEQ, EBM) show low degradation:** Small models on simple tasks with LayerNorm/spectral-norm absorbing scale perturbations. At larger scale and harder tasks, differentiation between these architectures would emerge. The current results bound the best-case scenario for each family.
+**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance. Static conductance mismatch — baked in at fabrication time — is the dominant noise source in 6 of 7 architectures.
+
+**Why DEQ and EBM tolerate 2-bit ADC when SSM and Transformer cannot:** Fixed-point contraction (DEQ: ρ(∂f/∂z) < 1) and stochastic sampling (EBM) absorb coarse quantization without catastrophic collapse. SSM recurrence and Transformer attention patterns both require sufficient precision in intermediate values to avoid divergence.
 
 ---
 
