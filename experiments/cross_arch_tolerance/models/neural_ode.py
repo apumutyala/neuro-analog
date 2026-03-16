@@ -132,15 +132,24 @@ def evaluate(model: nn.Module) -> float:
 
     # Disable thermal noise during log-det computation — stochastic noise makes the
     # Jacobian trace estimate noisy and unusable for density evaluation.
-    # Restore after so sweep state is not polluted (critical for ablation sweeps).
-    set_all_noise(model, thermal=False, mismatch=True, quantization=True)
+    # Save per-module state and restore exactly after, so ablation sweeps are not corrupted.
+    _saved = {
+        name: (m._use_thermal, m._use_quantization, m._use_mismatch)
+        for name, m in model.named_modules()
+        if hasattr(m, "_use_thermal")
+    }
+    for m in model.modules():
+        if hasattr(m, "_use_thermal"):
+            m._use_thermal = False
 
     with torch.enable_grad():  # needed for log-det computation
         z0, delta_logp = analog_odeint_with_logdet(
             model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=0.0
         )
 
-    set_all_noise(model, thermal=True, mismatch=True, quantization=True)
+    for name, m in model.named_modules():
+        if name in _saved:
+            m._use_thermal, m._use_quantization, m._use_mismatch = _saved[name]
 
     log_p0 = -0.5 * (z0.detach() ** 2).sum(dim=-1) - math.log(2 * math.pi)
     log_px = log_p0 + delta_logp.detach()

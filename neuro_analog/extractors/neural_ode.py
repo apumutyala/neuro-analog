@@ -529,15 +529,111 @@ class NeuralODEExtractor(BaseExtractor):
 
         return graph
 
-    def run(self) -> AnalogAmenabilityProfile:
-        """Full pipeline: load → extract dynamics → build graph → analyze."""
+    def calibrate_activations(
+        self,
+        calibration_data: torch.Tensor | None = None,
+        percentile: float = 99.9,
+    ) -> dict:
+        """Override: calibrate by sampling f_theta(t, z) at multiple time points.
+
+        The dynamics network has signature ``forward(t, z)``, so a plain
+        ``model(calibration_data)`` call would fail.  Instead, we register hooks
+        on the leaf modules of f_theta and run it at 5 uniformly-spaced t values
+        across ``t_span``, collecting the full activation distribution at each step.
+
+        Args:
+            calibration_data: Optional float tensor of shape ``(N, state_dim)``
+                used as the z batch.  If None or shape-mismatched, falls back to
+                ``torch.randn(32, state_dim)``.  Passing actual data samples (e.g.
+                the training set) gives more representative activation statistics
+                than random z.
+            percentile: Same semantics as BaseExtractor — clips at the given
+                upper/lower percentile to suppress outliers.
+        """
+        from neuro_analog.ir import PrecisionSpec
+        f_theta = self._get_f_theta()
+        assert f_theta is not None, "No model loaded — use from_module() or demo()"
+
+        # Build z batch
+        if (
+            calibration_data is not None
+            and calibration_data.is_floating_point()
+            and calibration_data.shape[-1] == self.state_dim
+        ):
+            z_batch = calibration_data.float().to(self.device)
+        else:
+            z_batch = torch.randn(32, self.state_dim, device=self.device)
+
+        # Sample t values uniformly across t_span (5 points covers trajectory well)
+        t0, t1 = self.t_span
+        t_samples = torch.linspace(t0, t1, 5, device=self.device)
+
+        activation_vals: dict[str, list[torch.Tensor]] = {}
+        hooks = []
+
+        def make_hook(name):
+            def hook_fn(mod, inp, out):
+                if isinstance(out, torch.Tensor):
+                    activation_vals.setdefault(name, []).append(
+                        out.detach().float().reshape(-1)
+                    )
+            return hook_fn
+
+        for name, module in f_theta.named_modules():
+            if not list(module.children()):
+                hooks.append(module.register_forward_hook(make_hook(name)))
+
+        f_theta.eval()
+        with torch.no_grad():
+            for t_val in t_samples:
+                # _TimeAugMLP.forward(t, z): t can be scalar or (batch,)
+                t_expanded = t_val.expand(z_batch.shape[0])
+                try:
+                    f_theta(t_expanded, z_batch)
+                except TypeError:
+                    f_theta(t_val, z_batch)  # fallback: scalar t
+
+        for h in hooks:
+            h.remove()
+
+        lo_q = (100.0 - percentile) / 100.0
+        hi_q = percentile / 100.0
+        specs = {}
+        for name, tensors in activation_vals.items():
+            all_vals = torch.cat(tensors)
+            act_min = float(torch.quantile(all_vals, lo_q))
+            act_max = float(torch.quantile(all_vals, hi_q))
+            act_std = float(all_vals.std())
+            crest = act_max / max(act_std, 1e-10) if act_max > 0 else 1.0
+            act_bits = max(4, min(16, math.ceil(math.log2(max(crest, 1.0))) + 4))
+            specs[name] = PrecisionSpec(
+                activation_min=act_min,
+                activation_max=act_max,
+                activation_std=act_std,
+                activation_bits=act_bits,
+            )
+        return specs
+
+    def run(self, calibration_data: torch.Tensor | None = None) -> AnalogAmenabilityProfile:
+        """Full pipeline: load → extract dynamics → build graph → analyze.
+
+        Args:
+            calibration_data: Optional float tensor of shape ``(N, state_dim)``.
+                Used to calibrate per-layer activation ranges via multi-timestep
+                sampling of f_theta(t, z).  Feeds into precision_score via
+                ``min_activation_precision_bits``.
+        """
         print(f"[neuro-analog] Neural ODE: {self.model_name}")
         self.load_model()
         dynamics = self.extract_dynamics()
         graph = self.build_graph()
         graph.set_dynamics(dynamics)
         self._graph = graph
+        if calibration_data is not None:
+            print("[neuro-analog] Calibrating activations (multi-timestep)...")
+            self._activation_specs = self.calibrate_activations(calibration_data)
         profile = graph.analyze()
+        profile = self._apply_activation_specs(profile)
         print(f"[neuro-analog] Done. Score: {profile.overall_score:.3f}")
         return profile
 

@@ -430,9 +430,73 @@ Each extractor reads a pretrained model, runs it on sample data, and builds the 
 ext.load_model()
 ext.extract_dynamics()      # → DynamicsProfile (ODE type, stiffness, time constants, etc.)
 ext.build_graph()           # → AnalogGraph (22-op typed IR)
-ext.extract_weight_statistics()  # → dict[str, PrecisionSpec] (min/max/std per layer)
-profile = ext.run()         # Full pipeline → AnalogAmenabilityProfile
+ext.extract_weight_statistics()  # → dict[str, PrecisionSpec] (weight min/max/std per layer)
+profile = ext.run()                                        # Full pipeline, no activation calibration
+profile = ext.run(calibration_data=X[:256])               # Full pipeline + activation calibration
+profile = ext.run(calibration_data=X[:256], ...)          # NeuralODE: z sampled from X, t swept
+specs   = ext.activation_specs                            # dict[str, PrecisionSpec] or None
+specs   = ext.calibrate_activations(X[:256], percentile=99.0)  # manual call, custom percentile
 ```
+
+#### Activation calibration — `calibrate_activations` / `run(calibration_data=...)`
+
+Passing a representative input batch to `run()` triggers a single forward pass with PyTorch forward hooks attached to every leaf module. Each hook collects the full distribution of activation values across the batch. Results are stored in `ext.activation_specs` and exposed as `PrecisionSpec.activation_min/max/std/bits` per layer.
+
+**Industry practice — percentile-based clipping:**
+
+Production quantization frameworks (TensorRT, PyTorch FX, Quanto) never use absolute min/max for calibration. Absolute extremes are dominated by outliers that appear on < 0.1% of inputs but inflate V_ref so much that 99.9% of inferences waste ADC headroom. The standard is **99.9th-percentile clipping**: V_ref is set to cover 99.9% of activation values, accepting a tiny clipping error on the outlier tail in exchange for 1–2 extra bits of effective resolution everywhere else. This is the default in `calibrate_activations(percentile=99.9)`.
+
+**What the numbers mean and how they affect noise:**
+
+| Field | What it captures | Hardware consequence |
+|---|---|---|
+| `activation_max` | 99.9th-percentile output magnitude | Sets V_ref for ADC/DAC calibration (V_ref = activation_max). Too low → clipping (hard saturation). Too high → wasted LSB precision. |
+| `activation_min` | 0.1th-percentile output | Determines whether ADC range must be bipolar. One-sided distributions (post-ReLU) allow a unipolar ADC with double the effective resolution. |
+| `activation_std` | Standard deviation of the output distribution | SNR proxy: SNR ≈ activation_std / σ_thermal. Low-std layers are disproportionately hurt by both thermal noise (ε ~ N(0, kT/C · N_in)) and quantization error (Δ = 2·V_ref / 2^n_bits). |
+| `activation_bits` | `ceil(log2(crest)) + 4` where crest = activation_max / activation_std | Estimated minimum ADC bits. Crest ≈ 10 → 8 bits (the empirical crossbar standard). Tanh outputs (crest ≈ 3) only need 6 bits. Large residual streams can demand 10+. |
+
+**Crest factor and its Shem / Ark relevance:**
+
+The crest factor (activation_max / activation_std) quantifies how many bits the ADC wastes on headroom vs. resolution. This is the same quantity Shem's V_ref calibration step (`calibrate_analog_model`) targets per inference — but the extractor measures it once at analysis time, before any analog conversion. A low crest factor means:
+
+- Fewer ADC bits needed → lower domain-crossing cost at every D/A boundary
+- Higher precision_score (since `activation_bits` is low)
+- Architecture is more "worth the Shem compilation effort" — the hardware can be configured with a smaller, lower-power ADC
+
+**How input choice affects the calibration:**
+
+The activation statistics are calibration-set dependent. A narrow batch (only one data mode) under-estimates V_ref and will clip OOD inputs at inference. The mitigations already applied:
+
+1. **Percentile clipping** (default 99.9) removes outliers without requiring a large batch.
+2. For representative coverage: use a diverse batch of 256–512 samples spanning the training distribution. `X_train[:32]` is the minimum; `X_train[:256]` is preferred.
+
+**Neural ODE — multi-timestep calibration:**
+
+`NeuralODEExtractor.calibrate_activations()` is overridden. The dynamics function `f_theta(t, z)` is called at 5 uniformly-spaced time points across `t_span`, collecting activations at each step. This matters because the ODE vector field visits different activation regimes at different times (e.g., near the data manifold at t=1 vs. near the prior at t=0). A static single-t call would miss most of the trajectory's activation range.
+
+```python
+# Neural ODE: pass data samples as z0 for calibration
+ext = NeuralODEExtractor.from_module(f_theta, state_dim=2, t_span=(0.0, 1.0))
+profile = ext.run(calibration_data=X_train[:256])   # z sampled from data; t swept automatically
+```
+
+For SSM and Transformer models, the standard `run(calibration_data=X_train[:32])` path works directly.
+
+For `StableDiffusionExtractor` and `FLUXExtractor` (multi-argument UNet/transformer forward), calibration via `run()` is not supported — call `calibrate_activations()` manually with a wrapper that constructs the correct `(noisy_sample, timestep, encoder_hidden_states)` tuple.
+
+**Relationship to the precision score:**
+
+`AnalogAmenabilityProfile.precision_score` is a **joint weight + activation** score (60/40 blend):
+
+```
+precision_score = 0.6 × weight_score + 0.4 × activation_score
+weight_score     = max(0, 1 - (min_weight_precision_bits - 4) / 12)
+activation_score = max(0, 1 - (min_activation_precision_bits - 4) / 12)
+```
+
+When no calibration data is provided, `min_activation_precision_bits` stays at the default of 8 (activation_score = 0.67), which neither rewards nor penalises uncalibrated profiles. When calibrated:
+- Low-crest architectures (e.g. tanh-only Neural ODEs) get `activation_bits ≈ 6` → activation_score ≈ 0.83 → precision_score improves
+- High-crest architectures (e.g. diffusion residual streams) get `activation_bits ≈ 10` → activation_score ≈ 0.5 → precision_score is penalised
 
 #### `extractors/neural_ode.py` — NeuralODEExtractor
 
@@ -487,6 +551,63 @@ Works with any HuggingFace model via `AutoModel`. Partitions each transformer bl
 | LayerNorm | DIGITAL | Requires mean/variance over activations |
 
 The extractor also notes FAVOR+ (kernel attention) as an upgrade path: replacing softmax attention with random feature projections φ(Q)·(φ(K)^T·V) pushes analog fraction from ~75% → ~90%.
+
+**No Shem export for Transformer.** Transformers have no native continuous-time ODE dynamics — every operation is a discrete matrix multiply or normalization step over a fixed sequence. There is no `dx/dt = f_θ(x, t)` to hand to Shem. The extractor's value is purely in the analog/digital partition analysis (which ~75-85% of FLOPs can physically live on a crossbar) and in the taxonomy scoring. A Shem export path would first require a continuous reparameterization of the architecture (e.g., treating the transformer as a Neural ODE with depth as time), which is a separate research problem.
+
+#### `extractors/diffusion.py` — DiffusionExtractor
+
+**Status: structural only — score network is an external oracle.**
+
+Extracts the continuous-time SDE / VP-SDE framework around a diffusion model's score network `s_θ(x, t)`:
+
+- `β(t)` schedule (linear, cosine, or learned) → noise budget per timestep
+- Forward process: `dx = -½β(t)x dt + √β(t) dW`
+- Reverse SDE: `dx = [-½β(t)x - β(t)s_θ(x,t)] dt + √β(t) dW`
+- `build_graph()` partitions the score network's internal structure: ResBlock MVMs (ANALOG), GroupNorm (DIGITAL), SiLU (DIGITAL), attention Q/K/V projections (ANALOG), softmax (DIGITAL)
+
+What the export generates: the SDE dynamics struct with the β schedule wired in, plus a call-out stub `s_theta(x, t)` where the score network goes. The score network itself (the U-Net or DiT backbone, which is 99.9%+ of compute) is not extracted into real weights — it's too large (512M–2B params) and architecturally equivalent to the Transformer case for its internal compute.
+
+The analog story for diffusion is: the SDE integration loop is an analog circuit, but every denoising step calls a large digital subgraph. The bottleneck is not the ODE solver — it's the number of ADC/DAC crossings per step.
+
+#### `extractors/flow.py` — FlowExtractor
+
+**Status: structural only — velocity network is an external oracle.**
+
+Extracts the rectified flow / flow matching ODE: `dx/dt = v_θ(x, t)`, where `x₀ ~ p_noise`, `x₁ ~ p_data`, and the velocity field is learned to be as straight as possible.
+
+- `straightness`: trajectory curvature (0 = perfectly straight; lower = fewer Euler steps needed)
+- `lipschitz`: Jacobian spectral norm of `v_θ` (upper bounds error accumulation per step)
+- `nfe`: number of function evaluations (4 for FLUX schnell, 28 for dev)
+- `build_graph()`: same transformer-block partition as TransformerExtractor
+
+What the export generates: an Euler integration loop with a `v_theta(x, t)` call-out stub. The velocity network for production flow models (FLUX.1 = 12B params) is not extracted. For the toy `make_moons` experiment model (a 3-layer tanh MLP), the weights *are* small enough to extract in full — but the current extractor doesn't implement that path; it uses the same oracle-call pattern for consistency with the production case.
+
+#### `extractors/ebm.py` — EBMTheoreticalAnalyzer
+
+**Status: theoretical reference only — no pretrained weight extraction.**
+
+EBMs have no standard forward pass and no canonical pretrained checkpoint format, so this extractor uses a theoretical profile rather than extracting from a real model. The experiment model (`experiments/.../ebm.py`) is an RBM; the extractor's `build_graph()` describes the general EBM case.
+
+The reason EBMs are included despite being theoretical: they represent the **analog ceiling**. An EBM samples from `p(x) ∝ exp(-E_θ(x))` via Gibbs / Langevin MCMC. Every step is:
+1. Local field computation: `h = W·x + b` → crossbar MVM (ANALOG)
+2. Stochastic bit flip: sample `x_i ~ σ(h_i)` → p-bit / sMTJ (ANALOG)
+
+Zero digital operations. Zero D/A boundaries. The entire sampling chain is analog-native. This is the reference point for the taxonomy: any other architecture with D/A boundaries is a step down from the EBM ceiling.
+
+No Shem export planned — there are no ODE dynamics; the system is a discrete MCMC chain, not a continuous-time ODE.
+
+#### `extractors/deq.py` — DEQExtractor
+
+**Status: structural, no real weights — needs a pretrained DEQ checkpoint.**
+
+Deep Equilibrium models find the fixed point `z* = f_θ(z*, x)` implicitly, which can be rewritten as an ODE `dz/dt = f_θ(z, x) - z` that drives the residual to zero. This is directly Shem-compilable: an analog circuit settles to equilibrium in continuous time, which *is* the fixed-point iteration.
+
+What the extractor extracts:
+- `spectral_radius`: ρ(∂f/∂z) at the fixed point — must be < 1 for convergence. If σ_mismatch shifts ρ above 1, the circuit oscillates instead of converging.
+- `fixed_point_residual`: ‖f_θ(z*,x) - z*‖ — should be near zero; increases under mismatch
+- `build_graph()`: MVM nodes for the weight matrices in `f_θ`, feedback edges for the recurrence
+
+What's missing: the extractor currently uses zero-initialized placeholder weights for the MVM nodes. A real DEQ checkpoint (e.g., from the `deq` library) would replace these. The experiment model is trained from scratch in `train_all.py`, so a checkpoint exists at `checkpoints/deq.pt` after training — wiring `load_model()` to read those weights is the remaining step (~1 hour of work).
 
 ---
 
@@ -758,8 +879,22 @@ python validate_ssm_shem_export.py   # SSM
 - Neural ODE: complete (all f_θ weights, mismatch annotations, diffrax solve block)
 - SSM: complete with real B/C weights from pretrained model
 
-**Structural templates (v_θ as external oracle, not full weights):**
-- Flow, Diffusion, DEQ: Euler loop / SDE structure defined; velocity/score network is a call-out
+**Structural templates — ODE/SDE shell without full weights:**
+
+These three architectures have real ODE dynamics (Shem-compilable in principle) but the export is not yet runnable end-to-end:
+
+| Architecture | What's generated | What's missing | Why it's a stub |
+|---|---|---|---|
+| Flow | Euler integration loop, `v_theta(x, t)` call-out | Velocity network weights | Production v_θ is 12B params (FLUX); toy model weights not wired to extractor |
+| Diffusion | VP-SDE dynamics, β schedule, `s_theta(x, t)` call-out | Score network weights | Score network is 99.9%+ of compute; architecturally the Transformer problem |
+| DEQ | Fixed-point ODE `dz/dt = f_θ(z,x) - z`, convergence struct | Real MVM weights | Extractor uses zero-init placeholders; checkpoint exists but not wired |
+
+**No Shem export path:**
+
+| Architecture | Reason |
+|---|---|
+| Transformer | No native ODE dynamics — all discrete matmuls and normalization; would require continuous reparameterization first |
+| EBM | Discrete MCMC chain (Gibbs sampling), not a continuous-time ODE; analog-native but not Shem-compilable |
 
 ---
 
@@ -812,6 +947,31 @@ The correct formula is `1.0 + (mean - baseline) / abs(baseline)`. Naive `mean / 
 
 `analogize()` walks `nn.Module` children recursively and replaces registered submodules. It cannot see Python function calls inside `forward()`. If `deq.py` used `torch.tanh()` instead of `self.act = nn.Tanh()`, the tanh would never become `AnalogTanh` and the DEQ experiment would be undersimulated. All model files use registered modules for every operation that should be analogized.
 
+### 7. Inference-Only Simulation (No Analog Training)
+
+The simulator instruments the forward pass only. There is no analog backward pass, no noise-aware gradient, and no support for training through the simulated hardware. This was a deliberate scope decision: characterizing *inference* degradation is the prerequisite question ("does this architecture survive fabrication at all?") before the more expensive question of hardware-aware training. Shem handles the optimization side; neuro-analog handles the measurement side.
+
+A consequence: mismatch δ is treated as a fixed, frozen perturbation of the weights during a sweep — not as a parameter to differentiate through. If you want to train a model to be robust to δ, you export to Shem and use its adjoint optimizer.
+
+### 8. Layer-Wise Nonidealities Only
+
+The simulator models three nonidealities at the layer boundary (mismatch, thermal noise, ADC quantization) and explicitly excludes:
+
+- **IR drop across crossbar arrays**: Metal interconnect resistance causes the effective input voltage to attenuate along a crossbar row. This is a strong function of array size and position — significant for large (512×512+) arrays, negligible for the small arrays in our experiment models.
+- **1/f (flicker) noise**: Frequency-dependent noise dominant at low frequencies / slow inference rates. Requires a power spectral density model not warranted for first-order characterization.
+- **PCM/RRAM conductance drift**: Post-fabrication, phase-change materials drift on a power-law timescale (hours to months). Critical for deployed hardware but out of scope for static tolerance characterization.
+- **Multi-layer coupling**: The simulator treats each layer independently. In practice, a large mismatch-induced signal at layer L can shift the input distribution to layer L+1 in ways that compound non-linearly. This is captured partially by the sweep (which measures end-to-end output degradation) but not in the per-layer model.
+
+These effects are well-understood and modeled in the HCDCv2 / IBM HERMES literature. Extending the simulator to include them is the natural next step for hardware validation studies.
+
+### 9. Architecture Scope: 7 Families, No Recurrent Networks
+
+The seven architectures (Neural ODE, SSM, Diffusion, Flow, EBM, Transformer, DEQ) were chosen to span the space of continuous-time vs. discrete, generative vs. discriminative, and ODE-native vs. discrete-sequence. Explicitly excluded:
+
+- **GRU / LSTM**: Gated recurrent units share the static-weight MVM structure but add element-wise gating operations. The simulator already supports these (AnalogLinear handles all MVMs, AnalogSigmoid handles the gates), but no extractor or experiment was built. The analog story is similar to SSM but with more DIGITAL_REQUIRED gates per step.
+- **Convolutional architectures (CNNs, U-Nets)**: AnalogConv is fully implemented and tested; CNN models were excluded from the cross-architecture experiment to keep the study focused on temporal/generative dynamics. CNNs as a class are straightforwardly analog-amenable (static weight crossbar MVMs throughout).
+- **Hybrid architectures (Jamba, Zamba, MambaFormer)**: SSM + Transformer interleaved. Extractors for pure SSM and pure Transformer exist; hybrid models would need a composite extractor. Left for future work.
+
 ---
 
 ## Findings Summary
@@ -856,17 +1016,26 @@ After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOT
 - IR types, nodes, graph, amenability scoring
 - Taxonomy and radar chart
 
-**Structural templates (architecture defined, weights not wired):**
-- Flow, Diffusion, DEQ Shem exports — ODE structure generated, v_θ/score network is an external oracle call
-- EBM extractor — theoretical reference, no pretrained weight extraction
+**Structural templates (ODE/SDE shell generated, not fully runnable):**
+- **Flow Shem export** — Euler loop + `v_theta` call-out stub; toy model weights not wired to extractor
+- **Diffusion Shem export** — VP-SDE dynamics + β schedule + `s_theta` call-out stub; score network external
+- **DEQ Shem export** — fixed-point ODE form + convergence struct; uses zero-init weight placeholders (checkpoint exists but not connected)
+- **EBM extractor** — theoretical profile only; no pretrained weight extraction (EBM is the analog ceiling reference)
 
-**Not implemented:**
-- Transformer Shem export (no native ODE)
-- PCM drift over time (power-law conductance decay)
-- 1/f noise (frequency-dependent, device-specific)
-- IR drop across crossbar array (resistance of metal interconnects)
-- GRU / LSTM / convolutional architectures
-- GRU / LSTM extractors
+**No export path (by design):**
+- **Transformer** — no native ODE dynamics; all discrete matmuls; would require continuous reparameterization first
+- **EBM** — discrete MCMC chain, not an ODE; analog-native but not Shem-compilable
+
+**Physics not modeled (scope decisions — see Key Design Decision §8):**
+- PCM/RRAM conductance drift over time (power-law decay)
+- 1/f (flicker) noise
+- IR drop across crossbar arrays
+- Multi-layer nonideality coupling
+
+**Architectures not covered (scope decisions — see Key Design Decision §9):**
+- GRU / LSTM (simulator supports them; no extractor or experiment)
+- CNN / U-Net (AnalogConv is implemented; excluded from cross-arch study)
+- Hybrid SSM+Transformer architectures (Jamba, Zamba, MambaFormer)
 
 ---
 
