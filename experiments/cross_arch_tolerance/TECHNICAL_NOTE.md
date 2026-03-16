@@ -97,7 +97,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 | Rank | Family | σ threshold (10% quality loss) | Digital Baseline | σ=5% quality | σ=15% quality |
 |---|---|---|---|---|---|
 | 1 | **Neural ODE** | **≥15%** | -1.908 log-likelihood | 0.993† | 0.934† |
-| 2 | **DEQ** | **≥15%** | -2.337 cross-entropy | 1.000 | 0.999 |
+| 2 | **DEQ** | **10%** | -0.177 cross-entropy | 0.975 | 0.744 |
 | 3 | **EBM** | **≥15%** | -0.279 neg. recon. MSE | 1.001 | 0.996 |
 | 4 | **SSM** | **≥15%** | -0.165 cross-entropy | 0.999 | 0.987 |
 | 5 | **Transformer** | **≥15%** | -0.125 cross-entropy | 0.996 | 0.968 |
@@ -113,7 +113,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 **Confirmed observations:**
 
 1. **Neural ODE is the most mismatch-tolerant** — 93.4% quality retained at σ=15% (mismatch-only ablation). However, 8-bit quantization also severely degrades log-density estimation (~2 nat/sample collapse from the digital baseline). Neural ODE should be considered alongside Diffusion as quantization-sensitive when used for CNF density estimation.
-2. **DEQ and EBM show near-zero mismatch degradation** — spectral normalization (DEQ) and inherent stochasticity (EBM) absorb weight noise. Note: DEQ digital baseline CE=2.337 ≈ random log(10)=2.303; the DEQ performs near chance on 8×8 MNIST even digitally. The threshold≥15% finding reflects stability of a consistently near-random model, not a robustly trained one.
+2. **EBM shows near-zero mismatch degradation** — inherent stochasticity (EBM Gibbs sampling) absorbs weight noise, reaching 0.996 at σ=15%. DEQ shows moderate tolerance (threshold σ=10%, 0.744 at σ=15%): spectral normalization absorbs small mismatch but degrades at larger σ as the effective contraction condition weakens. Note: prior DEQ results (CE=2.337 ≈ random) were caused by a silent fallback to random-data training when torchvision was absent; retrained on sklearn digits (8×8, 10-class), CE=0.177, ~93% test accuracy.
 3. **Transformer degrades smoothly**: 3.2% quality loss at σ=15%, never crossing the 10% threshold.
 4. **Flow degrades significantly at high mismatch**: reaches ~77% of its σ=0 quality at σ=15% (ablation), driven by velocity field perturbations accumulating over Euler integration steps.
 5. **Diffusion and Neural ODE share quantization as dominant failure mode** — 15.5% quality loss (Diffusion) and ~2 nat/sample log-likelihood collapse (Neural ODE) from 8-bit ADC alone, constant across all σ values. Both effects begin at σ=0 in the full-analog scenario.
@@ -128,7 +128,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 | Neural ODE | ≥15% | ≥15% (zero effect) | **0%** (−2 nats/sample†) | **Mismatch + Quantization** |
 | Transformer | ≥15% | ≥15% (zero effect) | ≥15% (stable at 0.999) | **Mismatch** |
 | SSM | ≥15% | ≥15% (zero effect) | ≥15% (zero effect) | **Mismatch** |
-| DEQ | ≥15% | ≥15% (zero effect) | ≥15% (stable at 1.000) | All near-zero |
+| DEQ | **10%** | ≥15% (zero effect) | ≥15% (stable at 0.999) | **Mismatch** |
 | EBM | ≥15% | ≥15% (minor ±1%) | ≥15% (minor ±0.1%) | **All sources equal** |
 | Flow | 10% | ≥15% (minor) | ≥15%‡ | **Mismatch** |
 | Diffusion | ≥15% | ≥15% (zero effect) | **0%** (−15.5% at σ=0) | **Quantization** |
@@ -149,7 +149,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 
 | Architecture | 2-bit quality | 4-bit quality | 6-bit quality | 8-bit quality | Min bits (<10% loss) |
 |---|---|---|---|---|---|
-| DEQ | 0.993 | 1.000 | 1.000 | 1.000 | **2 bits** |
+| DEQ | **−10.4 (!)** | 0.821 | 0.975 | 0.970 | **6 bits** |
 | EBM | 1.002 | 0.995 | 0.996 | 0.995 | **2 bits** |
 | Transformer | **−0.373 (!)** | 0.990 | 0.995 | 0.998 | **4 bits** |
 | SSM | **−0.962 (!)** | 0.970 | 1.000 | 1.002 | **4–6 bits** |
@@ -166,32 +166,31 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 **Confirmed key findings:**
 
 - **Transformer and SSM: catastrophic 2-bit failure.** Normalized quality goes to −0.37 (Transformer) and −0.96 (SSM) at 2-bit — state recurrence divergence (SSM) and attention pattern collapse (Transformer). Both recover fully at 4–6 bits.
-- **DEQ and EBM: uniquely 2-bit tolerant.** Fixed-point contraction (DEQ: ρ(∂f/∂z) < 1) and stochastic Gibbs sampling (EBM) both absorb coarse quantization without output collapse.
+- **EBM: uniquely 2-bit tolerant.** Stochastic Gibbs sampling absorbs coarse quantization without output collapse (normalized=1.002 at 2-bit). DEQ is **not** 2-bit tolerant with a properly trained model: normalized = −10.4 at 2 bits (cross-entropy collapses to ~2.197, near-random). Fixed-point contraction guarantees convergence but not output fidelity under severe quantization. DEQ requires ≥6-bit ADC (0.975 at 6-bit).
 - **Neural ODE and Diffusion: both are precision outliers.** Neural ODE log-density estimation (CNF) is as quantization-sensitive as Diffusion: any ADC discretization corrupts the log-det Jacobian across all ODE steps (normalized ≈ −0.05 at all bit-widths). If Neural ODE is used for generation only (without log-det), quantization sensitivity is expected to be much lower.
 - **Diffusion: same story.** 15.5% constant degradation at all bit-widths; 100-step error compounding is the mechanism.
 
 ### 3.4 DEQ Convergence Bifurcation (Figure 4)
 
-**Measured convergence_failure_rate:** (from deq_convergence.json)
+**Measured convergence_failure_rate:** (from deq_convergence.json, retrained model CE=0.177)
 
 | σ mismatch | Failure rate | Cross-entropy | Observation |
 |---|---|---|---|
-| 0% | **1.000** | -2.337 | Even digital model "fails" - max_iter=30 insufficient |
-| 1-15% | **~1.000** | -2.337 ± 0.0003 | Constant across all σ - no bifurcation observed |
+| 0% | **0.987** | -0.177 | Properly trained model; failure rate is a metric artifact |
+| 1–15% | **~0.988–0.992** | -0.177 to -0.223 | Stable failure rate even as CE degrades at high σ |
 
-**Confirmed finding: The DEQ convergence check is too strict.** With tolerance=1e-4 and max_iter=30, the fixed-point iteration exhausts its budget even digitally — but the output is still valid. The convergence_failure_rate metric measures iteration budget exhaustion, not output quality.
+**Confirmed finding: The convergence_failure_rate metric is not informative.** With tolerance=1e-4 on a 64-dim latent vector, the L2 norm of (z_{k+1} − z_k) only drops below 1e-4 if every element changes by < 1.5×10⁻⁵ simultaneously — effectively never within 30 iterations. The model achieves 93% test accuracy and proper CE=0.177, confirming it IS finding useful fixed points.
 
 **Evidence:**
 
-1. Cross-entropy stays constant (−2.337) across all σ → outputs are correct
+1. 93% test accuracy with failure_rate=0.987 → the fixed points are functionally correct
 2. Spectral normalization guarantees ρ(W_z) < 1 → fixed point exists and is unique
-3. Mismatch sweep confirms ≥15% threshold: DEQ quality at σ=15% = 0.999 (effectively no degradation)
+3. CE degrades continuously with σ (0.177 → 0.223 at σ=15%) → graceful degradation, not divergence
 
-**Revised interpretation:** DEQs with spectral normalization are **robust** to mismatch up to σ=15%. The "failure" is a convergence tolerance artifact, not a functional failure. For production analog DEQs:
+**Revised interpretation:** DEQs with spectral normalization degrade gracefully under mismatch. The "failure" is a per-dimension tolerance artifact. For production analog DEQs:
 
-- Increase max_iter to 50-100 for tight convergence
-- OR relax tolerance to 1e-3 for faster analog inference
-- OR report ||z_{k+1} - z_k|| as a continuous quality metric instead of binary failure
+- Relax tolerance to 1e-3 or use per-dimension tolerance (1e-4/√dim ≈ 1.25×10⁻⁵ per element)
+- OR report ||z_{k+1} - z_k||/√dim as a continuous quality metric instead of binary failure
 
 ---
 
@@ -203,7 +202,7 @@ These measurements directly inform analog chip architects:
 
 **Neural ODE — strongest candidate for mismatch tolerance, but quantization-sensitive for density estimation.** Confirmed: 93.4% mismatch tolerance at σ=15% (best among all 7 architectures). Mechanism: continuous ODE dynamics smooth weight perturbations. However, CNF log-density estimation is as quantization-sensitive as Diffusion: 8-bit ADC causes ~2 nat/sample log-likelihood collapse regardless of bit-width. ADC requirement for density estimation: effectively infinite precision — quantization-free analog-native log-det computation is needed. For pure generation (forward integration without log-det), quantization sensitivity is expected to be substantially lower and comparable to Flow.
 
-**DEQ — most stable under both mismatch and quantization.** Near-zero degradation at all mismatch levels (0.999 at σ=15%), uniquely 2-bit ADC tolerant (0.993). Spectral normalization on W_z (ρ < 1) absorbs scale perturbations. The convergence "failure" at max_iter=30 is a tolerance artifact (see §3.4). **Caveat:** the digital DEQ baseline achieves CE=2.337 ≈ random log(10)=2.303 on 8×8 MNIST, meaning the model barely outperforms random guessing even digitally. The stability finding is valid (the model doesn't diverge), but should be validated on a better-trained instance.
+**DEQ — moderate mismatch tolerance, 6-bit ADC minimum.** Spectral normalization on W_z (ρ < 1) provides graceful degradation: 0.975 at σ=5%, threshold at σ=10%, 0.744 at σ=15%. Not 2-bit tolerant with a properly trained model (CE collapses to near-random at 2-bit ADC); requires ≥6 bits (0.975 at 6-bit). The convergence_failure_rate metric (§3.4) is a tolerance artifact and does not indicate functional failure — the model achieves 93% test accuracy and CE=0.177 with proper data (sklearn digits). Previous near-random results (CE=2.337) were caused by a silent fallback to random-label training when torchvision was unavailable.
 
 **EBM — most noise-agnostic architecture.** Inherent stochasticity from Gibbs sampling makes all noise sources indistinguishable from MCMC variance. 2-bit ADC tolerant. Confirmed: 0.996 quality at σ=15%, zero thermal sensitivity, zero quantization sensitivity.
 
@@ -406,7 +405,7 @@ Rerun completed with `python sweep_all.py --force --n-trials 20` (mismatch main 
 | Architecture | σ threshold@10% | σ=5% quality | σ=15% quality |
 |---|---|---|---|
 | Neural ODE | ≥15%† | 0.993† | 0.934† |
-| DEQ | ≥15% | 1.000 | 0.999 |
+| DEQ | **10%** | 0.975 | 0.744 |
 | EBM | ≥15% | 1.001 | 0.996 |
 | SSM | ≥15% | 0.999 | 0.987 |
 | Transformer | ≥15% | 0.996 | 0.968 |
@@ -417,6 +416,6 @@ Rerun completed with `python sweep_all.py --force --n-trials 20` (mismatch main 
 ‡Flow Wasserstein baseline variance makes σ=0–7% values unreliable; threshold from `flow_ablation_mismatch.json`.
 §Nearest-neighbor metric produces ~15.5% constant offset from digital baseline at all σ; actual mismatch effect is small (ablation threshold=0.15).
 
-**§3.2 Dominant noise sources (all confirmed):** Thermal = zero effect for all architectures. Mismatch dominates for 5/7. Quantization co-dominant for **Diffusion** (15.5% loss from ADC, constant across all σ) and **Neural ODE** (~2 nat/sample log-likelihood collapse from ADC, structural to CNF log-det computation). DEQ note: digital baseline CE=2.337 ≈ random; stability result valid but trained instance is near-random.
+**§3.2 Dominant noise sources (all confirmed):** Thermal = zero effect for all architectures. Mismatch dominates for 6/7 (including DEQ). Quantization co-dominant for **Diffusion** (15.5% loss from ADC, constant across all σ) and **Neural ODE** (~2 nat/sample log-likelihood collapse from ADC, structural to CNF log-det computation).
 
-**§3.3 ADC minimum bits (from `*_adc.json` at σ=5%):** DEQ and EBM = 2 bits; Transformer = 4 bits; SSM = 4–6 bits; **Neural ODE = N/A** (all bit-widths cause log-det collapse; quantization-free computation required for density estimation); **Diffusion = N/A** (all bit-widths already degraded ~15.5% from quantization).
+**§3.3 ADC minimum bits (from `*_adc.json` at σ=5%):** EBM = 2 bits; DEQ = **6 bits** (2-bit catastrophic: normalized = −10.4; DEQ is not 2-bit tolerant with a properly trained model); Transformer = 4 bits; SSM = 4–6 bits; **Neural ODE = N/A** (all bit-widths cause log-det collapse; quantization-free computation required for density estimation); **Diffusion = N/A** (all bit-widths already degraded ~15.5% from quantization).

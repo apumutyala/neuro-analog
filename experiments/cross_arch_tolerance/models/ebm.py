@@ -54,12 +54,18 @@ def _load_mnist_8x8_binary(split="train", n=None):
         x = torch.stack([dataset[i][0].flatten() for i in range(min(n, len(dataset)))])
         return (x > 0.5).float()
     except Exception:
-        rng = np.random.default_rng(42 if split == "train" else 7)
-        n = n or (5000 if split == "train" else 500)
-        centers = rng.uniform(0.1, 0.9, size=(10, _VIS))
-        labels = rng.integers(0, 10, size=n)
-        x = centers[labels] + rng.normal(0, 0.15, size=(n, _VIS))
-        return torch.tensor((x > 0.5).astype(np.float32))
+        pass
+
+    # sklearn digits: 1797 samples of 8x8 images (0–16 scale), binarize at midpoint
+    from sklearn.datasets import load_digits
+    data = load_digits()
+    X = (data.data.astype(np.float32) > 8.0).astype(np.float32)  # binarize [0,16] at 8
+    rng = np.random.default_rng(42)
+    perm = rng.permutation(len(X))
+    split_idx = int(len(X) * 0.8)
+    idx = perm[:split_idx] if split == "train" else perm[split_idx:]
+    n = n or len(idx)
+    return torch.tensor(X[idx[:n]])
 
 def _get_data():
     return _load_mnist_8x8_binary("train", 5000), _load_mnist_8x8_binary("test", 500)
