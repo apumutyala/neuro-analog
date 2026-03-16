@@ -93,10 +93,23 @@ class PrecisionSpec:
     
     @property
     def weight_dynamic_range_db(self) -> float:
-        """Dynamic range in dB."""
+        """Weight dynamic range in dB: 20·log10(|max/min|)."""
         if self.weight_min == 0:
             return float('inf')
         return 20 * __import__('math').log10(abs(self.weight_max / self.weight_min))
+
+    @property
+    def activation_dynamic_range_db(self) -> float:
+        """Activation crest-factor in dB: 20·log10(activation_max / activation_std).
+
+        This is the quantity that determines ADC bit requirements — it measures how
+        many dB of headroom the ADC must cover above the typical signal level.
+        6 dB ≈ 1 bit.  A value of ~20 dB (crest ≈ 10) implies an 8-bit ADC is
+        adequate, matching the empirical analog crossbar standard.
+        """
+        if self.activation_std <= 0 or self.activation_max <= 0:
+            return 0.0
+        return 20 * __import__('math').log10(self.activation_max / self.activation_std)
 
 
 @dataclass
@@ -267,8 +280,18 @@ class AnalogAmenabilityProfile:
                 # (spectral radius may exceed 1). Score between energy_min and SDE.
                 self.dynamics_score = 0.85
         
-        # Precision score: higher when lower precision suffices
-        self.precision_score = max(0, 1.0 - (self.min_weight_precision_bits - 4) / 12)
+        # Precision score: joint weight + activation demand (0 = needs high precision, 1 = tolerates 4-bit)
+        # Weight score: how well the weight distribution fits low-precision crossbar storage.
+        # Activation score: how well the activation dynamic range fits the ADC range
+        #   (determined by crest factor; low crest = fewer ADC bits needed = better).
+        # Weights 60/40: weight precision is the dominant cost at the crossbar; activation
+        # precision drives the ADC, which is shared across many layers.
+        # When activation calibration has not been run, min_activation_precision_bits stays
+        # at the default of 8 — which maps to act_score=0.67, a neutral mid-range value
+        # that neither rewards nor heavily penalises uncalibrated profiles.
+        weight_score = max(0.0, 1.0 - (self.min_weight_precision_bits - 4) / 12)
+        act_score = max(0.0, 1.0 - (self.min_activation_precision_bits - 4) / 12)
+        self.precision_score = 0.6 * weight_score + 0.4 * act_score
         
         # Boundary score: fewer boundaries = better
         self.boundary_score = max(0, 1.0 - self.da_boundary_count / 100)
