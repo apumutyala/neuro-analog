@@ -134,7 +134,7 @@ def evaluate(model: nn.Module) -> float:
     # Jacobian trace estimate noisy and unusable for density evaluation.
     # Save per-module state and restore exactly after, so ablation sweeps are not corrupted.
     _saved = {
-        name: (m._use_thermal, m._use_quantization, m._use_mismatch)
+        name: {attr: getattr(m, attr) for attr in ("_use_thermal", "_use_quantization", "_use_mismatch") if hasattr(m, attr)}
         for name, m in model.named_modules()
         if hasattr(m, "_use_thermal")
     }
@@ -149,7 +149,8 @@ def evaluate(model: nn.Module) -> float:
 
     for name, m in model.named_modules():
         if name in _saved:
-            m._use_thermal, m._use_quantization, m._use_mismatch = _saved[name]
+            for attr, val in _saved[name].items():
+                setattr(m, attr, val)
 
     log_p0 = -0.5 * (z0.detach() ** 2).sum(dim=-1) - math.log(2 * math.pi)
     log_px = log_p0 + delta_logp.detach()
