@@ -39,6 +39,15 @@ from sklearn.datasets import make_circles
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from neuro_analog.simulator import analog_odeint_with_logdet, analogize, set_all_noise
 
+# Integration capacitor physical constants (same as AnalogLinear)
+_K_B = 1.380649e-23   # Boltzmann constant [J/K]
+_TEMP_K = 300.0        # Operating temperature
+_CAP_F = 1e-12         # Integration capacitor [F]
+# RC integrator noise: sigma = sqrt(kT/C) ≈ 6.4e-5 per sqrt(time) unit
+# This is noise ON THE STATE VARIABLE from the integrating capacitor,
+# physically distinct from the crossbar thermal noise already in AnalogLinear.
+_SIGMA_RC = math.sqrt(_K_B * _TEMP_K / _CAP_F)
+
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _N_TRAIN = 2000
