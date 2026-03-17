@@ -59,10 +59,13 @@ def _generate_data(n, seed):
     y = np.array(y)
     return torch.tensor(X, dtype=torch.long), torch.tensor(y, dtype=torch.long)
 
+_DATA_CACHE: dict = {}
+
 def _get_data():
-    X_train, y_train = _generate_data(_N_TRAIN, _SEED)
-    X_test, y_test = _generate_data(_N_TEST, _SEED + 1)
-    return X_train, y_train, X_test, y_test
+    if not _DATA_CACHE:
+        _DATA_CACHE["X_train"], _DATA_CACHE["y_train"] = _generate_data(_N_TRAIN, _SEED)
+        _DATA_CACHE["X_test"], _DATA_CACHE["y_test"] = _generate_data(_N_TEST, _SEED + 1)
+    return _DATA_CACHE["X_train"], _DATA_CACHE["y_train"], _DATA_CACHE["X_test"], _DATA_CACHE["y_test"]
 
 
 # ── Model ─────────────────────────────────────────────────────────────────

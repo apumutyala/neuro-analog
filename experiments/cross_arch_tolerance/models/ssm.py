@@ -38,6 +38,7 @@ the N=8 complex-dimensional state must propagate relevant context across all 64
 timesteps, stressing both the A_bar decay (RC time constants) and B/C projections.
 """
 
+import itertools
 import math
 import os
 import sys
@@ -74,8 +75,13 @@ def _generate_data(n, seed):
         y.append(int(label))
     return torch.tensor(np.array(X), dtype=torch.long), torch.tensor(y, dtype=torch.long)
 
+_DATA_CACHE: dict = {}
+
 def _get_data():
-    return _generate_data(_N_TRAIN, 42), _generate_data(_N_TEST, 43)
+    if not _DATA_CACHE:
+        _DATA_CACHE["train"] = _generate_data(_N_TRAIN, 42)
+        _DATA_CACHE["test"] = _generate_data(_N_TEST, 43)
+    return _DATA_CACHE["train"], _DATA_CACHE["test"]
 
 
 # ── Model ─────────────────────────────────────────────────────────────────
@@ -261,9 +267,9 @@ def evaluate(model: nn.Module) -> float:
     Cross-entropy measures the full logit distribution, not just argmax.
     Degrades smoothly with analog noise because logit magnitudes matter.
     """
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
     _, (X_test, y_test) = _get_data()
-    X_test, y_test = X_test.to(_DEVICE), y_test.to(_DEVICE)
-    model = model.to(_DEVICE)
+    X_test, y_test = X_test.to(device), y_test.to(device)
     model.eval()
     with torch.no_grad():
         logits = model(X_test)
@@ -276,10 +282,10 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
     
     Returns negative MSE so higher = better (consistent with other metrics).
     """
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
     _, (X_test, _) = _get_data()
-    X_test = X_test.to(_DEVICE)
-    model = model.to(_DEVICE)
-    digital_baseline = digital_baseline.to(_DEVICE)
+    X_test = X_test.to(device)
+    digital_baseline = digital_baseline.to(device)
     model.eval()
     digital_baseline.eval()
 

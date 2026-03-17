@@ -98,6 +98,8 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     print(f"{'='*50}")
 
     model = module.load_model(ckpt_path)
+    model = model.to(_DEVICE)
+    print(f"  Device: {next(iter(model.parameters())).device}")
     if name in _SUBSTRATE_AWARE:
         eval_fn = lambda m, _s=analog_substrate: module.evaluate(m, analog_substrate=_s)
     else:
