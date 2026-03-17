@@ -31,10 +31,14 @@ This is realistic: on actual analog hardware, the diagonal A (RC decay) is
 implemented as analog RC circuits (no replacement needed), while B and C
 are the crossbar MVMs that get mismatch.
 
-Task: Same synthetic sequence task as Transformer (pattern detection).
-Same train/test data for direct comparison.
+Task: Same synthetic sequence task as Transformer — detect adjacent bigram [3,5]
+in a 64-token sequence (vocab=32). Shared task and sequence length with Transformer
+for direct comparison. seq_len=64 requires genuine temporal state compression:
+the N=8 complex-dimensional state must propagate relevant context across all 64
+timesteps, stressing both the A_bar decay (RC time constants) and B/C projections.
 """
 
+import math
 import os
 import sys
 import torch
@@ -44,10 +48,16 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+from neuro_analog.simulator.analog_ssm_solver import analog_ssm_recurrence
+
+_K_B = 1.380649e-23   # Boltzmann constant [J/K]
+_DEFAULT_TEMP_K = 300.0
+_DEFAULT_CAP_F = 1e-12
+
 # ── Dataset — same as transformer for direct comparison ──────────────────
 
-_VOCAB = 16
-_SEQ_LEN = 10
+_VOCAB = 32
+_SEQ_LEN = 64
 _PATTERN = (3, 5)
 _N_TRAIN = 4000
 _N_TEST = 1000
@@ -94,8 +104,48 @@ class _S4DLayer(nn.Module):
         nn.init.normal_(self.C.weight, std=0.1)
         nn.init.eye_(self.D.weight)
 
+        # ── Analog noise state ──────────────────────────────────────────
+        # Activated by resample_all_mismatch() after analogize().
+        # sigma_mismatch=0 during training → no perturbation → identical behavior.
+        self.sigma_mismatch = 0.0
+        self._use_mismatch = True
+        self._use_thermal = False  # off by default so training is noiseless; enabled by set_all_noise() after analogize()
+        # Stored mismatch realizations for A_bar (resampled per Monte Carlo trial).
+        # Magnitude perturbation: |A_bar'| = |A_bar| * delta_mag, delta_mag ~ N(1,σ²)
+        # Phase perturbation:     φ' = φ + delta_phase, delta_phase ~ N(0,σ²)
+        self.register_buffer("_delta_A_mag", torch.ones(d_state))
+        self.register_buffer("_delta_A_phase", torch.zeros(d_state))
+
+    # ── Analog noise API (mirrors AnalogLinear interface) ──────────────────
+
+    def resample_mismatch(self, sigma: float | None = None) -> None:
+        """Re-roll A_bar mismatch deltas. Called by resample_all_mismatch()."""
+        if sigma is not None:
+            self.sigma_mismatch = sigma
+        if self.sigma_mismatch > 0:
+            device = self._delta_A_mag.device
+            self._delta_A_mag = (
+                1.0 + self.sigma_mismatch * torch.randn(self.d_state, device=device)
+            )
+            self._delta_A_phase = self.sigma_mismatch * torch.randn(
+                self.d_state, device=device
+            )
+        else:
+            self._delta_A_mag.fill_(1.0)
+            self._delta_A_phase.zero_()
+
+    def set_noise_config(
+        self, thermal: bool = True, quantization: bool = True, mismatch: bool = True
+    ) -> None:
+        """Toggle noise sources. Called by set_all_noise() for ablation sweeps."""
+        self._use_mismatch = mismatch
+        self._use_thermal = thermal
+        # quantization doesn't apply to the state recurrence (no ADC inside loop)
+
+    # ── Discrete params ────────────────────────────────────────────────────
+
     def _get_discrete_params(self):
-        """Compute A_bar, B_bar from continuous-time params via bilinear."""
+        """Compute A_bar from continuous-time params via bilinear transform."""
         dt = self.dt
         A_real = -torch.exp(self.log_A_real)     # Re < 0 → stable
         A_imag = self.log_A_imag
@@ -115,21 +165,34 @@ class _S4DLayer(nn.Module):
         B, T, D = u.shape
         A_bar = self._get_discrete_params()       # (d_state,) complex
 
+        # Apply A_bar mismatch: magnitude (RC time constant drift) + phase (frequency drift)
+        # Only active when sigma_mismatch > 0 (set by resample_all_mismatch after analogize())
+        if self._use_mismatch and self.sigma_mismatch > 0:
+            new_mag = A_bar.abs() * self._delta_A_mag.to(dtype=A_bar.real.dtype, device=A_bar.device)
+            new_phase = A_bar.angle() + self._delta_A_phase.to(dtype=A_bar.real.dtype, device=A_bar.device)
+            A_bar = new_mag * torch.exp(1j * new_phase)
+
         # B projection: (batch, T, d_model) → (batch, T, 2*d_state) → complex
         Bu = self.B(u)  # (batch, T, 2*d_state) — real representation
-        # Split into real and imaginary parts
         Bu_re = Bu[..., :self.d_state]
         Bu_im = Bu[..., self.d_state:]
         Bu_c = torch.complex(Bu_re, Bu_im)   # (batch, T, d_state)
 
-        # Recurrence: h[t] = A_bar * h[t-1] + B_bar * u[t]
-        # B_bar = 1.0 (absorbed into B projection matrix for simplicity)
-        h = torch.zeros(B, self.d_state, dtype=torch.complex64, device=u.device)
+        # Thermal transient noise: Johnson-Nyquist on integration capacitors
+        # σ_transient = sqrt(kT/C), scales as sqrt(dt) per step (Euler-Maruyama)
+        sigma_transient = (
+            math.sqrt(_K_B * _DEFAULT_TEMP_K / _DEFAULT_CAP_F)
+            if self._use_thermal else 0.0
+        )
+
+        # Run recurrence (with transient noise if thermal enabled)
+        hs = analog_ssm_recurrence(A_bar, Bu_c, sigma_transient=sigma_transient, dt=self.dt)
+        # hs: (batch, T, d_state) complex
+
         ys = []
         for t in range(T):
-            h = A_bar.unsqueeze(0) * h + Bu_c[:, t, :]
-            h_real = torch.cat([h.real, h.imag], dim=-1)  # (batch, 2*d_state)
-            y_t = self.C(h_real) + self.D(u[:, t, :])     # (batch, d_model)
+            h_real = torch.cat([hs[:, t, :].real, hs[:, t, :].imag], dim=-1)
+            y_t = self.C(h_real) + self.D(u[:, t, :])
             ys.append(y_t)
 
         return torch.stack(ys, dim=1)   # (batch, T, d_model)
@@ -154,7 +217,7 @@ class _SSMClassifier(nn.Module):
 # ── Standard interface ─────────────────────────────────────────────────────
 
 def create_model() -> nn.Module:
-    return _SSMClassifier(vocab=_VOCAB, d_model=12, d_state=8, n_layers=2)  # Reduced from 32 to operate near capacity
+    return _SSMClassifier(vocab=_VOCAB, d_model=16, d_state=8, n_layers=2)  # d_model=16 operates near capacity on 64-token task; N=8 state compresses 64-step context
 
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
@@ -162,7 +225,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
     criterion = nn.CrossEntropyLoss()
     batch_size = 128
-    n_epochs = 300
+    n_epochs = 400
 
     model.train()
     for epoch in range(n_epochs):

@@ -166,12 +166,19 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
+_EVAL_SEED = 42  # Fixed seed for initial noise — eliminates sampling variance across trials
+
+
 def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
     """Generate 500 samples, compute negative mean nearest-neighbor distance.
-    
+
+    Uses a fixed seed for the initial noise tensor so the metric is deterministic
+    up to analog noise in the model weights — eliminating sampling variance from
+    the baseline measurement.
+
     Args:
         model: Score network
-        analog_substrate: "classic" (DDIM), "cld" (RLC), or "extropic_dtm" (Gibbs chain)
+        analog_substrate: "classic" (DDIM) or "cld" (Critically-Damped Langevin / RLC)
     """
     _, X_test = _get_data()
     betas = _get_betas()
@@ -182,11 +189,13 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
     n_ddim = 10  # DDIM steps for fast deterministic sampling
     ddim_steps = torch.linspace(_T - 1, 0, n_ddim + 1).long()
 
-    x = torch.randn(n_gen, _IMG_DIM)
+    # Fixed seed: removes z0-sampling variance from baseline, same as Flow fix
+    rng = np.random.default_rng(_EVAL_SEED)
+    x = torch.tensor(rng.standard_normal((n_gen, _IMG_DIM)), dtype=torch.float32)
 
     with torch.no_grad():
         if analog_substrate == "classic":
-            # Classic DDIM (deterministic ODE)
+            # Classic DDIM (deterministic reverse ODE)
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
                 t_next = ddim_steps[i + 1].item()
@@ -202,60 +211,96 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
                     x = math.sqrt(alpha_next) * x0_pred + math.sqrt(1 - alpha_next) * eps
                 else:
                     x = x0_pred
+
         elif analog_substrate == "cld":
-            # Critically-Damped Langevin Diffusion (RLC circuit mapping)
-            # dx = (beta/M)v dt, dv = -beta x dt - Gamma(beta/M)v dt + score + sqrt(2(Gamma)beta) dW
-            # But the dW is physically provided by the circuit's thermal noise, so it scales perfectly 
-            # and doesn't explicitly compound as algorithmically injected error if perfectly tuned. 
-            # We simulate the analog integration using the score function via a coarse Euler step.
+            # Critically-Damped Langevin Diffusion — maps to RLC circuit physics.
+            # dx = (β/M)v·dt
+            # dv = (−β·x − Γ·(β/M)·v − ε_θ)·dt + √(2Γβ·dt)·dW
+            # The dW term corresponds to Johnson-Nyquist thermal noise in the resistor R=Γ.
+            # This is NOT injected noise — on real hardware it is physically present.
+            # The DDPM-trained score function ε_θ approximates ∇log q(x_t), which
+            # is compatible with CLD inference as a score-guided SDE.
             Gamma = 2.0
             M = 1.0
             v = torch.zeros_like(x)
-            dt = 1.0 / n_ddim 
+            dt = 1.0 / n_ddim
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
                 t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
-                beta_t = betas[t_curr]
-                
-                # Hardware thermal noise driving the diffusion
+                beta_t = betas[t_curr].item()
                 thermal_noise = torch.randn_like(v)
-                
-                eps = model(x, t_tensor) # score approx
-                
-                # RLC update
+                eps = model(x, t_tensor)
                 dx = (beta_t / M) * v * dt
-                dv = (-beta_t * x - Gamma * (beta_t / M) * v - eps) * dt + math.sqrt(2 * Gamma * beta_t * dt) * thermal_noise
-                
+                dv = ((-beta_t * x - Gamma * (beta_t / M) * v - eps) * dt
+                      + math.sqrt(2 * Gamma * beta_t * dt) * thermal_noise)
                 x = x + dx
                 v = v + dv
+
         elif analog_substrate == "extropic_dtm":
-            # Fully connected analog thermodynamic chain (no D/A boundaries)
-            # The signal stays in the analog domain, we pass x into score model, step directly
+            # Denoising Thermodynamic Model (DTM) — Extropic arXiv:2510.23972
+            #
+            # Each reverse diffusion step samples from the EBM joint distribution:
+            #   P_θ(x^{t-1}|x^t) ∝ exp(-(ℰ^f(x^{t-1},x^t) + ℰ^θ(x^{t-1})))
+            #
+            # Forward coupling energy (Gaussian DDPM kernel):
+            #   ℰ^f(x^{t-1},x^t) = ||x^t - √(1-β_t)·x^{t-1}||² / (2β_t)
+            #   ∇_{x^{t-1}} ℰ^f = -√(1-β_t)/β_t · (x^t - √(1-β_t)·x^{t-1})
+            #
+            # Learned energy gradient via score network:
+            #   ε_θ(x,t) ≈ -√(1-ᾱ_t) · ∇_x log p(x_t)
+            #   → ∇ℰ^θ ≈ ε_θ(x^{t-1}, t-1) / √(1-ᾱ_{t-1})
+            #
+            # Langevin MCMC step (K_mix per diffusion step):
+            #   x ← x - η(∇ℰ^f + ∇ℰ^θ) + √(2η)·ξ,  ξ ~ N(0,I)
+            #
+            # Hardware mapping: ξ is thermal/shot noise from subthreshold transistors
+            # (not injected — physically present). E_cell ≈ 2 fJ per step (paper §IV).
+            # Paper uses K_mix ≈ 250 for convergence; we use 15 for sweep speed.
+            # Warm-start from DDIM prediction reduces effective K needed.
+            K_mix = 15
+            eta = 0.05
+
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
-                
-                # Direct analog feedback
-                score = model(x, t_tensor)
-                
-                # DTM Gibbs step - simplified continuous update mapped to p-bit energy minimization
-                beta_t = betas[t_curr]
-                thermal = math.sqrt(beta_t) * torch.randn_like(x)
-                x = x - 0.5 * beta_t * x - beta_t * score + thermal
+                t_prev = max(ddim_steps[i + 1].item(), 0)
 
+                beta_t = betas[t_curr].item()
+                sqrt_one_minus_beta = math.sqrt(1.0 - beta_t)
+                alpha_bar_prev = alphas_bar[t_prev].item()
+
+                # Warm start: DDIM x0-prediction then re-noise to t_prev
+                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long)
+                eps_init = model(x, t_tensor_curr)
+                alpha_curr = alphas_bar[t_curr].item()
+                x0_pred = (x - math.sqrt(1.0 - alpha_curr) * eps_init) / math.sqrt(alpha_curr)
+                x_prev = (math.sqrt(alpha_bar_prev) * x0_pred
+                          + math.sqrt(1.0 - alpha_bar_prev) * eps_init)
+
+                # Langevin MCMC targeting P_θ(x^{t-1}|x^t)
+                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long)
+                score_denom = math.sqrt(max(1.0 - alpha_bar_prev, 1e-8))
+                for _ in range(K_mix):
+                    # ∇ℰ^f: pulls x_prev toward x / √(1-β_t)
+                    grad_f = -(sqrt_one_minus_beta / beta_t) * (x - sqrt_one_minus_beta * x_prev)
+                    # ∇ℰ^θ: score network as energy gradient
+                    eps = model(x_prev, t_tensor_prev)
+                    grad_theta = eps / score_denom
+                    # Langevin step — ξ is transistor thermal/shot noise
+                    xi = torch.randn_like(x_prev)
+                    x_prev = x_prev - eta * (grad_f + grad_theta) + math.sqrt(2.0 * eta) * xi
+
+                x = x_prev
 
     # Negative mean nearest-neighbor distance (higher = better)
     gen = x.detach()
     test = X_test[:min(len(X_test), 500)]
-    # Compute pairwise L2 distances efficiently (chunked to avoid OOM)
     chunk = 50
     min_dists = []
     for i in range(0, len(gen), chunk):
-        g_chunk = gen[i:i+chunk]  # (chunk, D)
+        g_chunk = gen[i:i + chunk]
         dists = ((g_chunk.unsqueeze(1) - test.unsqueeze(0)) ** 2).sum(-1).sqrt()
         min_dists.append(dists.min(dim=1).values)
-    mean_dist = torch.cat(min_dists).mean().item()
-    return -mean_dist  # higher = better (lower distance = better quality)
+    return -torch.cat(min_dists).mean().item()
 
 
 def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "classic") -> float:
@@ -324,21 +369,51 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
                 dv_a = (-beta_t * x_analog - Gamma * (beta_t / M) * v_analog - eps_analog) * dt + math.sqrt(2 * Gamma * beta_t * dt) * thermal_noise
                 x_analog = x_analog + dx_a
                 v_analog = v_analog + dv_a
-                
+
         elif analog_substrate == "extropic_dtm":
+            # DTM — same Langevin formulation as evaluate().
+            # Digital baseline and analog model run the same K_mix Langevin steps;
+            # MSE between their trajectories isolates analog mismatch contribution.
+            # Both share the same thermal noise draw per Langevin step so that
+            # the MSE reflects weight-mismatch error, not sampling variance.
+            K_mix = 15
+            eta = 0.05
+
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
-                
-                eps_dig = digital_baseline(x_dig, t_tensor)
-                eps_analog = model(x_analog, t_tensor)
-                
-                beta_t = betas[t_curr]
-                thermal = math.sqrt(beta_t) * torch.randn_like(x_dig)
-                
-                x_dig = x_dig - 0.5 * beta_t * x_dig - beta_t * eps_dig + thermal
-                x_analog = x_analog - 0.5 * beta_t * x_analog - beta_t * eps_analog + thermal
-    
+                t_prev = max(ddim_steps[i + 1].item(), 0)
+
+                beta_t = betas[t_curr].item()
+                sqrt_one_minus_beta = math.sqrt(1.0 - beta_t)
+                alpha_bar_prev = alphas_bar[t_prev].item()
+                alpha_curr = alphas_bar[t_curr].item()
+
+                # Warm start for both
+                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long)
+                eps_init_dig = digital_baseline(x_dig, t_tensor_curr)
+                eps_init_analog = model(x_analog, t_tensor_curr)
+                x0_dig = (x_dig - math.sqrt(1.0 - alpha_curr) * eps_init_dig) / math.sqrt(alpha_curr)
+                x0_analog = (x_analog - math.sqrt(1.0 - alpha_curr) * eps_init_analog) / math.sqrt(alpha_curr)
+                xp_dig = math.sqrt(alpha_bar_prev) * x0_dig + math.sqrt(1.0 - alpha_bar_prev) * eps_init_dig
+                xp_analog = math.sqrt(alpha_bar_prev) * x0_analog + math.sqrt(1.0 - alpha_bar_prev) * eps_init_analog
+
+                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long)
+                score_denom = math.sqrt(max(1.0 - alpha_bar_prev, 1e-8))
+                for _ in range(K_mix):
+                    grad_f_dig = -(sqrt_one_minus_beta / beta_t) * (x_dig - sqrt_one_minus_beta * xp_dig)
+                    grad_f_analog = -(sqrt_one_minus_beta / beta_t) * (x_analog - sqrt_one_minus_beta * xp_analog)
+                    eps_dig_lv = digital_baseline(xp_dig, t_tensor_prev)
+                    eps_analog_lv = model(xp_analog, t_tensor_prev)
+                    grad_theta_dig = eps_dig_lv / score_denom
+                    grad_theta_analog = eps_analog_lv / score_denom
+                    # Shared noise: isolates mismatch vs sampling variance
+                    xi = torch.randn_like(xp_dig)
+                    xp_dig = xp_dig - eta * (grad_f_dig + grad_theta_dig) + math.sqrt(2.0 * eta) * xi
+                    xp_analog = xp_analog - eta * (grad_f_analog + grad_theta_analog) + math.sqrt(2.0 * eta) * xi
+
+                x_dig = xp_dig
+                x_analog = xp_analog
+
     mse = ((x_dig - x_analog) ** 2).mean().item()
     return -mse
 

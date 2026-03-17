@@ -83,14 +83,16 @@ class _RBM(nn.Module):
     We use nn.Linear to hold W (for analogize() to replace with AnalogLinear).
     Transpose in h→v pass is handled explicitly.
 
-    DOUBT NOTED: analogize() replaces nn.Linear, which in PyTorch stores W as
-    a (out, in) matrix. For W_fwd (vis→hid): W is (hid, vis). The backward pass
-    W^T is (vis, hid). We create W_bwd as a second nn.Linear(hid, vis) and
-    at the start of training, set W_bwd.weight = W_fwd.weight.T (they share
-    the transposed weights conceptually, but in PyTorch they're separate parameters).
-    This means the analog model has independent mismatch on W_fwd and W_bwd,
-    which is realistic: RRAM read in forward vs transposed mode has different
-    noise characteristics (different column vs row sense amplifiers).
+    PHYSICAL NOTE: W_fwd and W_bwd are the same physical RRAM crossbar array
+    read in two orientations (rows-as-source vs columns-as-source). Static
+    conductance mismatch δ is a property of each cell — identical regardless
+    of read direction. What DOES differ is thermal noise (different sense
+    amplifier paths), which AnalogLinear models separately (dynamic, per-pass).
+
+    After analogize(), we enforce δ_bwd = δ_fwd^T via sync_mismatch_pairs(),
+    which is called automatically by resample_all_mismatch() between trials.
+    Without this sync, independent δ would roughly double the degradation,
+    overstating the EBM's sensitivity to mismatch.
     """
     def __init__(self, n_vis=64, n_hid=32):
         super().__init__()
@@ -107,6 +109,17 @@ class _RBM(nn.Module):
         # Registered modules so analogize() replaces them with AnalogSigmoid
         self.act_h = nn.Sigmoid()   # v → h activation
         self.act_v = nn.Sigmoid()   # h → v activation
+
+    def sync_mismatch_pairs(self) -> None:
+        """Enforce δ_bwd = δ_fwd^T (same physical crossbar, same conductance cells).
+
+        Called automatically by resample_all_mismatch() after each trial resample.
+        Only takes effect after analogize() has replaced nn.Linear with AnalogLinear
+        (before that, W_fwd/W_bwd have no 'delta' buffer and this is a no-op).
+        """
+        if hasattr(self.W_fwd, "delta") and hasattr(self.W_bwd, "delta"):
+            with torch.no_grad():
+                self.W_bwd.delta.copy_(self.W_fwd.delta.T)
 
     def h_given_v(self, v):
         return self.act_h(self.W_fwd(v))
@@ -132,7 +145,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
     lr = 0.01
     batch_size = 64
-    n_epochs = 200
+    n_epochs = 500
     model.train()
 
     for epoch in range(n_epochs):
@@ -153,9 +166,10 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
             model.W_fwd.bias.data += lr * (h_prob_pos.mean(0) - h_prob_neg.mean(0))
             model.W_bwd.bias.data += lr * (v_pos.mean(0) - v_neg.mean(0))
 
-        if (epoch + 1) % 50 == 0:
+        if (epoch + 1) % 100 == 0:
             recon_err = evaluate(model)
-            print(f"  [EBM] epoch {epoch+1}/{n_epochs}: neg_recon={recon_err:.4f}")
+            model.train()  # evaluate() sets eval mode; restore for continued training
+            print(f"  [EBM] epoch {epoch+1}/{n_epochs}: neg_nn_dist={recon_err:.4f}")
 
     torch.save(model.state_dict(), save_path)
     return model
@@ -167,22 +181,35 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
-def evaluate(model: nn.Module) -> float:
-    """k=100 Gibbs steps from test data, measure negative reconstruction MSE."""
-    _, X_test = _get_data()
-    v = X_test.clone()
-    model.eval()
+_N_BURN = 500   # burn-in steps from random init to reach near-stationary distribution
+_N_EVAL = 200   # number of independent chains to sample
 
+
+def evaluate(model: nn.Module) -> float:
+    """Free-generation quality: Gibbs chain from random init, negative mean NN distance.
+
+    Starts from v ~ Bernoulli(0.5) (uninformed prior), runs _N_BURN Gibbs steps
+    to reach near-stationary distribution, then measures mean nearest-neighbor
+    distance of generated samples to the test set.
+
+    This directly measures what the model has *learned* rather than how fast
+    the chain mixes back to a given input. Under analog mismatch, a corrupted
+    energy landscape produces samples further from the data manifold.
+
+    Returns negative mean NN distance (higher = better; 0 = perfect overlap).
+    """
+    _, X_test = _get_data()
+    model.eval()
     with torch.no_grad():
-        for _ in range(100):
+        v = (torch.rand(_N_EVAL, _VIS) > 0.5).float()
+        for _ in range(_N_BURN):
             h_prob = model.h_given_v(v)
             h_sample = (h_prob > torch.rand_like(h_prob)).float()
-            v_recon = model.v_given_h(h_sample)
-            # Keep continuous values (probabilities), not hard samples, for stability
-            v = v_recon
+            v = model.v_given_h(h_sample)
 
-    mse = ((v - X_test) ** 2).mean().item()
-    return -mse  # higher = better (lower reconstruction error)
+        dists = torch.cdist(v, X_test.float())       # (_N_EVAL, n_test)
+        min_dists = dists.min(dim=1).values           # nearest test neighbor per chain
+    return -min_dists.mean().item()                   # higher = better
 
 
 def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:

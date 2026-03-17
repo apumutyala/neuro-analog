@@ -27,6 +27,7 @@ Metric: Classification accuracy + convergence failure rate (tracked separately).
 evaluate() returns accuracy. evaluate_convergence() returns failure rate.
 """
 
+import math
 import os
 import sys
 import torch
@@ -115,15 +116,20 @@ class _DEQClassifier(nn.Module):
 
         During training: unroll n_iter steps (gradient flows through).
         During eval: iterate until convergence.
+
+        Convergence criterion: RMS per-element change < tol.
+        Using norm / sqrt(z_dim) makes tol dimension-independent (e.g., tol=1e-4
+        means average per-element change < 1e-4, regardless of z_dim).
         """
         n_iter = n_iter or self.max_iter
         z = torch.zeros(x.shape[0], self.z_dim, device=x.device)
+        scale = math.sqrt(self.z_dim)
         for _ in range(n_iter):
             z_next = self.f_theta(z, x)
             if not self.training:
                 # Check convergence (eval only — gradient not needed through this check)
                 with torch.no_grad():
-                    if (z_next - z).norm(dim=-1).max().item() < self.tol:
+                    if (z_next - z).norm(dim=-1).max().item() / scale < self.tol:
                         break
             z = z_next
         return self.readout(z), z
@@ -131,18 +137,22 @@ class _DEQClassifier(nn.Module):
     def convergence_failure_rate(self, x, max_iter=None, tol=None) -> float:
         """Fraction of inputs where fixed-point iteration did not converge.
 
-        A non-converged sample is one where ||z_{k+1} - z_k|| >= tol at max_iter.
+        A non-converged sample is one where RMS per-element change >= tol at max_iter.
+        Uses norm / sqrt(z_dim) so tol is dimension-independent: tol=1e-4 means
+        average per-element change < 1e-4 (not raw L2 norm < 1e-4, which would
+        never trigger for z_dim=64 since sqrt(64)*per_element_change >> 1e-4).
         Under mismatch, high spectral radius can prevent convergence entirely.
         """
         max_iter = max_iter or self.max_iter
         tol = tol or self.tol
         z = torch.zeros(x.shape[0], self.z_dim, device=x.device)
         converged = torch.zeros(x.shape[0], dtype=torch.bool)
+        scale = math.sqrt(self.z_dim)
 
         with torch.no_grad():
             for _ in range(max_iter):
                 z_next = self.f_theta(z, x)
-                delta = (z_next - z).norm(dim=-1)
+                delta = (z_next - z).norm(dim=-1) / scale  # RMS per-element change
                 converged |= (delta < tol)
                 z = z_next
 
