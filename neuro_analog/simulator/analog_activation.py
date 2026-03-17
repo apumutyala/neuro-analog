@@ -30,11 +30,10 @@ DIGITAL-REQUIRED (GELU, SiLU):
   This captures the domain crossing cost: the output must go through
   an ADC to run the digital GELU, then a DAC to re-enter analog.
 
-  DOUBT NOTED: The directive gives n_bits as a parameter but does not
-  specify whether it's the same n_bits as the linear layer's ADC or a
-  separate specification. We use the same n_bits for consistency (one
-  converter spec per datapath). If the hardware has separate specs for
-  activation converters, this can be trivially extended.
+  Note: n_bits here applies to the ADC/DAC pair at the domain crossing. We use the
+  same n_bits as the linear layer's ADC for consistency (one converter spec per
+  datapath). If the hardware has separate specs for activation converters, this
+  can be trivially extended.
 """
 
 from __future__ import annotations
@@ -125,7 +124,7 @@ class _DigitalWithCrossing(nn.Module):
     The exact digital function is computed (deterministic), then a
     quantization pass + small thermal noise represents the converter penalty.
 
-    DOUBT NOTED: The directive models this as quantize(f(x), n_bits) + ε_thermal.
+    We model this as: quantize(f(x), n_bits) + ε_thermal.
     The thermal noise here is from the DAC output buffer, not the ADC input
     (which is modeled in AnalogLinear). We use σ = sqrt(kT/C) without the
     sqrt(N) factor since this is a single-output DAC, not a summed crossbar.

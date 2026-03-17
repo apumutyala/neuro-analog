@@ -20,7 +20,7 @@ Analog mapping:
   B_bar * u → analogized as AnalogLinear (B_bar matrix-vector multiply)
   C * h → AnalogLinear
 
-DOUBT NOTED: True S4D has complex-valued A_bar. analogize() only replaces
+True S4D has complex-valued A_bar. analogize() only replaces
 nn.Linear modules, not complex multiplications. The A_bar element-wise multiply
 (diagonal state decay) is the "RC integrator" primitive — it stays as is
 (implemented as torch.complex multiplication, which has no analog replacement).

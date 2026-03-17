@@ -11,13 +11,12 @@ Protocol:
       metric = eval_fn(analog_model)
     Record mean, std, all trials
 
-DOUBT NOTED: The directive says "analog_model = analogize(model, sigma, ...)"
-inside the inner loop — this creates a NEW analog model each trial (new δ).
-An equivalent and faster approach: analogize once, then call resample_all_mismatch()
-between trials. We use the resample approach since it avoids repeated deepcopy
-overhead. Result is statistically identical.
+Note: analogize() is called inside the inner loop, creating a fresh analog model
+(new δ draw) each trial. An equivalent and faster approach: analogize once, then
+call resample_all_mismatch() between trials. We use the resample approach since it
+avoids repeated deepcopy overhead. Result is statistically identical.
 
-DOUBT NOTED: The sweep eval_fn receives the analog model as its only argument.
+The sweep eval_fn receives the analog model as its only argument.
 This means the eval_fn must carry its own test data (via closure or module-level
 state). This is by design — the sweep doesn't know about dataset specifics.
 Each model file's evaluate() function uses module-level test data.
@@ -201,7 +200,7 @@ def adc_sweep(
     Uses bit_values as the "sigma_values" axis in SweepResult for uniform
     interface, though the axis represents ADC bits.
 
-    DOUBT NOTED: The SweepResult dataclass has sigma_values field. For the
+    The SweepResult dataclass has sigma_values field. For the
     ADC sweep we reuse it for bit values. This is a typing awkwardness but
     avoids duplicating the entire dataclass. The metric_name distinguishes them.
     """

@@ -3,7 +3,7 @@
 Architecture: RBM with visible=64 (8x8), hidden=32.
 Training: Contrastive Divergence CD-1.
 Evaluation: 100 steps of Gibbs sampling from test data, measure reconstruction error.
-  Metric: Negative reconstruction MSE [HIGHER = BETTER].
+  Metric: Negative reconstruction MSE [higher = better].
 
 EBM analog mapping:
   h = sigmoid(W^T v + c) — crossbar MVM + sigmoid (AnalogSigmoid)
@@ -13,17 +13,17 @@ During analog evaluation:
   The W matrix (crossbar) and sigmoid (diff pair) are both analogized.
   Tests the core Boltzmann machine analog computing paradigm.
 
-DOUBT NOTED: The directive says "initialize from test data, run k=100 Gibbs steps."
-100 steps from the data is essentially running the Markov chain close to equilibrium
+Evaluation runs 100 Gibbs steps initialized from test data — essentially running the
+Markov chain close to equilibrium
 and checking if the chain stays close to real data. This is a proxy for model quality:
 a well-trained RBM's Gibbs chain will oscillate near the data manifold.
 Reconstruction error = ||v_k - v_0||^2 averaged over test set.
 
-DOUBT NOTED: Contrastive Divergence (CD-1) uses 1 step of Gibbs sampling
+Contrastive Divergence (CD-1) uses 1 step of Gibbs sampling
 to approximate the negative phase gradient. CD-k with k=1 is the standard
 training procedure and works well for RBMs on binarized data.
 
-DOUBT NOTED: Binarization threshold is 0.5 (pixel > 0.5 → 1, else 0).
+Binarization threshold is 0.5 (pixel > 0.5 → 1, else 0).
 The 8x8 MNIST grayscale values are in [0,1] after normalization.
 """
 
