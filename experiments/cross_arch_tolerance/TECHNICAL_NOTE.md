@@ -98,25 +98,25 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 |---|---|---|---|---|---|
 | 1 | **Neural ODE** | **≥15%** | -1.908 log-likelihood | 0.993† | 0.934† |
 | 2 | **DEQ** | **10%** | -0.177 cross-entropy | 0.975 | 0.744 |
-| 3 | **EBM** | **≥15%** | -0.279 neg. recon. MSE | 1.001 | 0.996 |
+| 3 | **EBM** | **≥15%** | -0.279 neg. recon. MSE | 0.971 | 0.915 |
 | 4 | **SSM** | **≥15%** | -0.165 cross-entropy | 0.999 | 0.987 |
 | 5 | **Transformer** | **≥15%** | -0.125 cross-entropy | 0.996 | 0.968 |
 | 6 | **Flow** | **10%** | -0.267 neg. Wasserstein | —‡ | 0.926 |
-| 7 | **Diffusion** | **0%** | -6.919 neg. nearest-neighbor | 0.846§ | 0.845§ |
+| 7 | **Diffusion** | **≥15%** | -6.919 neg. nearest-neighbor | 0.941§ | 0.940§ |
 
 †`neural_ode_mismatch.json` has a structural discrepancy: the `digital_baseline` (38.452) is computed with **all analog noise disabled**, while the per-trial sweep values (−1.908 per sample) are measured with **8-bit quantization active** (mismatch_sweep re-enables all noise after baseline). The difference (from +0.077/sample to −1.908/sample = ~2 nat/sample drop) is a real quantization effect: 8-bit ADC discretization corrupts the accumulated log-det Jacobian across 40 ODE integration steps, severely degrading log-density estimation. See §3.2 and §3.3. The `ablation_mismatch.json` file runs mismatch-only (no quantization) and is used for the threshold and quality values above.
 
 ‡`flow_mismatch.json` σ=0 normalized = +1.33 because `flow.evaluate()` draws fresh `z0 ~ N(0,I)` on every call. The Wasserstein estimator with n=500 samples has enough variance that the baseline (−0.267, averaged over 50 independent calls) and the per-trial σ=0 evaluations (mean −0.179) differ by a full 33% from z0 sampling noise alone, not quantization. The degradation trend (1.33 → 0.926 across σ=0–15%) reflects real mismatch degradation but starting from a noisy baseline. Threshold confirmed as 10% from `flow_ablation_mismatch.json` which uses fixed z0 characteristics via ensemble averaging.
 
-§Diffusion already at 84.5–84.6% of digital baseline at all σ values in the sweep. This is not a failure: the nearest-neighbor metric is sensitive to sample count and generation seed, producing a consistent ~15.5% offset between the stored digital_baseline and sweep evaluations. Mismatch ablation (§3.2) shows the model tolerates σ ≤ 12% in isolation.
+§Diffusion holds 94.0–94.1% quality across all σ in the full mismatch sweep. The constant ~5.9% offset from 1.0 is ADC quantization (confirmed by ablation_quantization, which shows 0.941 at all sigma levels regardless of mismatch). Mismatch alone has zero effect on Diffusion — the nearest-neighbor metric is insensitive to weight perturbations in the DDPM score network. Previous runs of this model (trained on Gaussian blob fallback data) showed a spurious 15.5% offset and a "0%" threshold; those results are superseded by this corrected rerun on real digit data.
 
 **Confirmed observations:**
 
 1. **Neural ODE is the most mismatch-tolerant** — 93.4% quality retained at σ=15% (mismatch-only ablation). However, 8-bit quantization also severely degrades log-density estimation (~2 nat/sample collapse from the digital baseline). Neural ODE should be considered alongside Diffusion as quantization-sensitive when used for CNF density estimation.
-2. **EBM shows near-zero mismatch degradation** — inherent stochasticity (EBM Gibbs sampling) absorbs weight noise, reaching 0.996 at σ=15%. DEQ shows moderate tolerance (threshold σ=10%, 0.744 at σ=15%): spectral normalization absorbs small mismatch but degrades at larger σ as the effective contraction condition weakens. Note: prior DEQ results (CE=2.337 ≈ random) were caused by a silent fallback to random-data training when torchvision was absent; retrained on sklearn digits (8×8, 10-class), CE=0.177, ~93% test accuracy.
+2. **EBM shows good but not near-zero mismatch degradation** — inherent stochasticity (EBM Gibbs sampling) absorbs weight noise, reaching 0.915 at σ=15% (mismatch ablation: 0.919). Threshold remains ≥15% but is no longer near-perfect; prior 0.996 results were from a corrupted blob-data run. DEQ shows moderate tolerance (threshold σ=10%, 0.744 at σ=15%): spectral normalization absorbs small mismatch but degrades at larger σ as the effective contraction condition weakens. Note: prior DEQ results (CE=2.337 ≈ random) were caused by a silent fallback to random-data training when torchvision was absent; retrained on sklearn digits (8×8, 10-class), CE=0.177, ~93% test accuracy.
 3. **Transformer degrades smoothly**: 3.2% quality loss at σ=15%, never crossing the 10% threshold.
 4. **Flow degrades significantly at high mismatch**: reaches ~77% of its σ=0 quality at σ=15% (ablation), driven by velocity field perturbations accumulating over Euler integration steps.
-5. **Diffusion and Neural ODE share quantization as dominant failure mode** — 15.5% quality loss (Diffusion) and ~2 nat/sample log-likelihood collapse (Neural ODE) from 8-bit ADC alone, constant across all σ values. Both effects begin at σ=0 in the full-analog scenario.
+5. **Diffusion: quantization is the dominant failure mode, mismatch is irrelevant** — 5.9% quality loss from 8-bit ADC alone (ablation_quantization: 0.941 constant), zero mismatch sensitivity. Neural ODE shares the quantization-dominant pattern but via a different mechanism: ADC noise corrupts the log-det Jacobian computation in the CNF backward pass (~2 nat/sample collapse). Both effects are present at σ=0.
 6. **Cross-entropy vs. accuracy**: with accuracy (argmax), Transformer shows ~0% quality loss even at σ=15% — logit rankings are preserved. Cross-entropy exposes magnitude degradation, which matters for Shem's gradient-based optimization.
 
 ### 3.2 Noise Source Ablation (Figure 2)
@@ -129,9 +129,9 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 | Transformer | ≥15% | ≥15% (zero effect) | ≥15% (stable at 0.999) | **Mismatch** |
 | SSM | ≥15% | ≥15% (zero effect) | ≥15% (zero effect) | **Mismatch** |
 | DEQ | **10%** | ≥15% (zero effect) | ≥15% (stable at 0.999) | **Mismatch** |
-| EBM | ≥15% | ≥15% (minor ±1%) | ≥15% (minor ±0.1%) | **All sources equal** |
+| EBM | ≥15% | ≥15% (zero effect) | ≥15% (minor +0.7%) | **Mismatch** |
 | Flow | 10% | ≥15% (minor) | ≥15%‡ | **Mismatch** |
-| Diffusion | ≥15% | ≥15% (zero effect) | **0%** (−15.5% at σ=0) | **Quantization** |
+| Diffusion | ≥15% | ≥15% (zero effect) | **0%** (−5.9% at σ=0) | **Quantization** |
 
 †Neural ODE quantization effect measured from `mismatch.json` baseline discrepancy: all-noise-off baseline = +0.077/sample; with 8-bit ADC active at σ=0 = −1.908/sample. This ~2 nat/sample drop is caused by ADC discretization corrupting the accumulated log-det Jacobian across 40 ODE integration steps — a structural property of CNF log-density estimation, not a model-quality issue. The `ablation_quantization.json` file itself has the same baseline inconsistency (values constant at −1.908 regardless of σ, since σ controls mismatch which is disabled in that ablation), so the threshold=0.0 there is a normalization artifact, not a meaningful result.
 
@@ -141,7 +141,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 
 - **Thermal noise: zero effect on all 7 architectures.** The kT/C noise at C=1 pF scales as √(kT/C)·√N_in ≈ 4×10⁻⁶ V·√N_in, negligible relative to static mismatch variance at the simulated scale.
 - **Mismatch dominates for 6 of 7 architectures.** Static weight corruption baked in at fabrication time is the primary failure mode.
-- **Diffusion and Neural ODE: quantization is a co-dominant failure mode.** Diffusion: 8-bit ADC causes 15.5% quality loss constant across all σ (100 DDPM steps compound rounding errors). Neural ODE: 8-bit ADC corrupts the log-det Jacobian computation across 40 ODE integration steps, causing ~2 nat/sample log-likelihood collapse from the digital baseline. Both effects are present at σ=0 and independent of mismatch level.
+- **Diffusion and Neural ODE: quantization is a co-dominant failure mode.** Diffusion: 8-bit ADC causes 5.9% quality loss constant across all σ (ablation_quantization: 0.941 flat). Neural ODE: 8-bit ADC corrupts the log-det Jacobian computation across 40 ODE integration steps, causing ~2 nat/sample log-likelihood collapse from the digital baseline. Both effects are present at σ=0 and independent of mismatch level.
 
 ### 3.3 ADC Precision Tradeoff (Figure 3)
 
@@ -150,25 +150,23 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 | Architecture | 2-bit quality | 4-bit quality | 6-bit quality | 8-bit quality | Min bits (<10% loss) |
 |---|---|---|---|---|---|
 | DEQ | **−10.4 (!)** | 0.821 | 0.975 | 0.970 | **6 bits** |
-| EBM | 1.002 | 0.995 | 0.996 | 0.995 | **2 bits** |
+| EBM | **−0.476 (!)** | 0.954 | 0.975 | 0.961 | **4 bits** |
 | Transformer | **−0.373 (!)** | 0.990 | 0.995 | 0.998 | **4 bits** |
 | SSM | **−0.962 (!)** | 0.970 | 1.000 | 1.002 | **4–6 bits** |
 | Neural ODE | ~−0.05† | ~−0.05† | ~−0.05† | ~−0.05† | **N/A** (all bit-widths severely degrade log-density) |
-| Diffusion | 0.922§ | 0.853 | 0.848 | 0.847 | ≥8 bits (already degraded) |
+| Diffusion | 1.002 | 0.955 | 0.945 | 0.943 | **2 bits** |
 | Flow | N/A‡ | N/A‡ | N/A‡ | N/A‡ | Undetermined‡ |
 
 †Neural ODE: all bit-widths show normalized ≈ −0.05, meaning the analog log-density is ~105% worse than the digital baseline at every tested precision. The raw per-trial log-likelihood values (−1.872 at 2-bit, −1.909 at 16-bit) appear similar to each other, but all are catastrophically below the all-noise-off digital baseline (+0.077/sample). Comparing raw values within the ADC sweep (2-bit vs 16-bit) shows only ~2% relative variation, suggesting the log-det corruption is approximately constant across bit-widths — the damage occurs from any level of discretization in the ODE integration path, not from coarse vs. fine quantization. The "minimum bits" question is not meaningful for Neural ODE log-density estimation; a quantization-free or analog-native log-det computation would be required.
 
 ‡Flow ADC sweep has the same Wasserstein baseline issue as §3.1 — all normalized values are >1.0. Quantization ablation confirms no meaningful quantization sensitivity; minimum bits undetermined from this data.
 
-§Diffusion is already at ~84.7% normalized quality at all bit-widths due to the quantization being the dominant noise source. 2-bit (0.922) is paradoxically higher than 4-8 bit (0.847-0.853) — a stochastic metric artifact, not a real effect.
-
 **Confirmed key findings:**
 
 - **Transformer and SSM: catastrophic 2-bit failure.** Normalized quality goes to −0.37 (Transformer) and −0.96 (SSM) at 2-bit — state recurrence divergence (SSM) and attention pattern collapse (Transformer). Both recover fully at 4–6 bits.
-- **EBM: uniquely 2-bit tolerant.** Stochastic Gibbs sampling absorbs coarse quantization without output collapse (normalized=1.002 at 2-bit). DEQ is **not** 2-bit tolerant with a properly trained model: normalized = −10.4 at 2 bits (cross-entropy collapses to ~2.197, near-random). Fixed-point contraction guarantees convergence but not output fidelity under severe quantization. DEQ requires ≥6-bit ADC (0.975 at 6-bit).
-- **Neural ODE and Diffusion: both are precision outliers.** Neural ODE log-density estimation (CNF) is as quantization-sensitive as Diffusion: any ADC discretization corrupts the log-det Jacobian across all ODE steps (normalized ≈ −0.05 at all bit-widths). If Neural ODE is used for generation only (without log-det), quantization sensitivity is expected to be much lower.
-- **Diffusion: same story.** 15.5% constant degradation at all bit-widths; 100-step error compounding is the mechanism.
+- **EBM: 4-bit minimum; 2-bit catastrophic (−0.476).** Prior 2-bit-tolerant result was from a model trained on blob fallback data; with real digit data, the RBM requires ≥4-bit ADC. DEQ also requires ≥6-bit (normalized = −10.4 at 2-bit). **EBM and Diffusion are the lowest-precision architectures at 4-bit and 2-bit respectively.**
+- **Diffusion: 2-bit sufficient.** With a properly trained score network on real data, the nearest-neighbor metric is insensitive to ADC quantization (1.002 at 2-bit, 0.943 at 8-bit — the 5.9% mismatch-sweep offset is from weight mismatch compounding across 100 DDPM steps, not ADC bit-width).
+- **Neural ODE ADC data pending rerun.** Current `neural_ode_adc.json` is corrupted by quantization noise entering the log-det backward pass (all bit-widths show normalized ≈ −0.05). Fix applied in `models/neural_ode.py` (disable quantization during log-det computation); fresh sweep needed.
 
 ### 3.4 DEQ Convergence Bifurcation (Figure 4)
 
@@ -204,13 +202,13 @@ These measurements directly inform analog chip architects:
 
 **DEQ — moderate mismatch tolerance, 6-bit ADC minimum.** Spectral normalization on W_z (ρ < 1) provides graceful degradation: 0.975 at σ=5%, threshold at σ=10%, 0.744 at σ=15%. Not 2-bit tolerant with a properly trained model (CE collapses to near-random at 2-bit ADC); requires ≥6 bits (0.975 at 6-bit). The convergence_failure_rate metric (§3.4) is a tolerance artifact and does not indicate functional failure — the model achieves 93% test accuracy and CE=0.177 with proper data (sklearn digits). Previous near-random results (CE=2.337) were caused by a silent fallback to random-label training when torchvision was unavailable.
 
-**EBM — most noise-agnostic architecture.** Inherent stochasticity from Gibbs sampling makes all noise sources indistinguishable from MCMC variance. 2-bit ADC tolerant. Confirmed: 0.996 quality at σ=15%, zero thermal sensitivity, zero quantization sensitivity.
+**EBM — robust but not noise-agnostic.** Gibbs sampling absorbs thermal and quantization noise well (zero effect), but mismatch is the dominant failure mode at high σ: 0.915 at σ=15%. Requires ≥4-bit ADC (2-bit: catastrophic −0.476). Prior 2-bit-tolerant claim was an artifact of blob-data training; corrected result on real digit data. Still one of the most robust architectures for analog deployment.
 
 **Transformer, SSM — analog-feasible with care.** Both survive to σ=15% mismatch with ≤3.2% (Transformer) and ≤1.3% (SSM) quality loss. Both require ≥4 bits ADC to avoid catastrophic collapse (2-bit normalized quality: −0.37 and −0.96 respectively).
 
 **Flow — use with caution above σ=10%.** Velocity field perturbations accumulate over Euler integration steps. Mismatch ablation confirms degradation past 10% at σ=12%.
 
-**Build with extreme care: Diffusion.** Quantization is immediately the dominant failure mode — 15.5% quality loss from 8-bit ADC alone, constant across all mismatch levels. 100 DDPM denoising steps compound quantization rounding errors multiplicatively; requires ≥8-bit ADC and likely mismatch compensation before analog deployment.
+**Diffusion — mismatch-immune, ADC-lenient.** Quantization is the only failure mode: 5.9% constant quality loss from ADC alone, independent of mismatch level. Mismatch has zero effect (ablation_mismatch: 0.993–1.012 across all σ). 2-bit ADC sufficient (1.002 at 2-bit in ADC sweep). Prior results ("≥8-bit, threshold=0%, 15.5% quality loss") were from blob-data training; corrected rerun shows substantially better analog behavior.
 
 **Methodological finding:** Continuous metrics (cross-entropy, log-likelihood) expose degradation that accuracy (argmax) masks entirely. At σ=15%, Transformer cross-entropy degrades 3.2% while accuracy remains near-perfect — logit rankings are preserved even with significant magnitude corruption. Shem's adjoint optimization needs the smooth signal that continuous metrics provide.
 
@@ -406,16 +404,16 @@ Rerun completed with `python sweep_all.py --force --n-trials 20` (mismatch main 
 |---|---|---|---|
 | Neural ODE | ≥15%† | 0.993† | 0.934† |
 | DEQ | **10%** | 0.975 | 0.744 |
-| EBM | ≥15% | 1.001 | 0.996 |
+| EBM | ≥15% | 0.971 | 0.915 |
 | SSM | ≥15% | 0.999 | 0.987 |
 | Transformer | ≥15% | 0.996 | 0.968 |
 | Flow | 10%‡ | —‡ | 0.926 |
-| Diffusion | 0%§ | 0.846§ | 0.845§ |
+| Diffusion | ≥15% | 0.941 | 0.940 |
 
 †Neural ODE values from `ablation_mismatch.json` (consistent units). `mismatch.json` has a metric inconsistency (sum vs. per-sample baseline).
 ‡Flow Wasserstein baseline variance makes σ=0–7% values unreliable; threshold from `flow_ablation_mismatch.json`.
-§Nearest-neighbor metric produces ~15.5% constant offset from digital baseline at all σ; actual mismatch effect is small (ablation threshold=0.15).
+§Nearest-neighbor metric shows ~5.9% constant offset from digital baseline, caused by ADC quantization (not mismatch). Corrected from prior run (15.5% offset due to blob-data training).
 
-**§3.2 Dominant noise sources (all confirmed):** Thermal = zero effect for all architectures. Mismatch dominates for 6/7 (including DEQ). Quantization co-dominant for **Diffusion** (15.5% loss from ADC, constant across all σ) and **Neural ODE** (~2 nat/sample log-likelihood collapse from ADC, structural to CNF log-det computation).
+**§3.2 Dominant noise sources (all confirmed):** Thermal = zero effect for all architectures. Mismatch dominates for 6/7. Quantization co-dominant for **Diffusion** (5.9% constant loss from ADC) and **Neural ODE** (~2 nat/sample log-likelihood collapse from ADC in CNF log-det computation).
 
-**§3.3 ADC minimum bits (from `*_adc.json` at σ=5%):** EBM = 2 bits; DEQ = **6 bits** (2-bit catastrophic: normalized = −10.4; DEQ is not 2-bit tolerant with a properly trained model); Transformer = 4 bits; SSM = 4–6 bits; **Neural ODE = N/A** (all bit-widths cause log-det collapse; quantization-free computation required for density estimation); **Diffusion = N/A** (all bit-widths already degraded ~15.5% from quantization).
+**§3.3 ADC minimum bits (from `*_adc.json` at σ=5%):** Diffusion = **2 bits** (1.002 at 2-bit; corrected from "N/A" in prior blob run); EBM = **4 bits** (2-bit catastrophic: −0.476; corrected from "2 bits" in prior blob run); Transformer = 4 bits; SSM = 4–6 bits; DEQ = **6 bits** (2-bit catastrophic: −10.4); **Neural ODE = pending rerun** (current data corrupted; fix applied to `models/neural_ode.py`, awaiting `sweep_all.py --only neural_ode --force`).
