@@ -36,6 +36,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _VIS = 64
@@ -143,13 +145,15 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
+    X_train = X_train.to(_DEVICE)
+    model = model.to(_DEVICE)
     lr = 0.01
     batch_size = 64
     n_epochs = 500
     model.train()
 
     for epoch in range(n_epochs):
-        idx = torch.randperm(len(X_train))[:batch_size]
+        idx = torch.randperm(len(X_train), device=_DEVICE)[:batch_size]
         v_pos = X_train[idx]
         h_prob_pos = model.h_given_v(v_pos)
         h_sample = (h_prob_pos > torch.rand_like(h_prob_pos)).float()
@@ -177,7 +181,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -199,9 +204,11 @@ def evaluate(model: nn.Module) -> float:
     Returns negative mean NN distance (higher = better; 0 = perfect overlap).
     """
     _, X_test = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
     model.eval()
     with torch.no_grad():
-        v = (torch.rand(_N_EVAL, _VIS) > 0.5).float()
+        v = (torch.rand(_N_EVAL, _VIS, device=_DEVICE) > 0.5).float()
         for _ in range(_N_BURN):
             h_prob = model.h_given_v(v)
             h_sample = (h_prob > torch.rand_like(h_prob)).float()
@@ -218,17 +225,20 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
     Returns negative MSE so higher = better (consistent with other metrics).
     """
     _, X_test = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     model.eval()
     digital_baseline.eval()
-    
+
     with torch.no_grad():
         # RBM reconstruction: visible → hidden → visible (use model methods)
         h_prob_dig = digital_baseline.h_given_v(X_test)
         v_recon_dig = digital_baseline.v_given_h(h_prob_dig)
-        
+
         h_prob_analog = model.h_given_v(X_test)
         v_recon_analog = model.v_given_h(h_prob_analog)
-    
+
     mse = ((v_recon_dig - v_recon_analog) ** 2).mean().item()
     return -mse
 

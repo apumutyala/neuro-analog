@@ -42,6 +42,8 @@ _CAP_F = 1e-12
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _IMG_DIM = 64
@@ -173,6 +175,8 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     (X_train, y_train), _ = _get_data()
+    X_train, y_train = X_train.to(_DEVICE), y_train.to(_DEVICE)
+    model = model.to(_DEVICE)
     n_epochs = 500
     batch_size = 128
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -181,7 +185,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
     model.train()
     for epoch in range(n_epochs):
-        idx = torch.randperm(len(X_train))[:batch_size]
+        idx = torch.randperm(len(X_train), device=_DEVICE)[:batch_size]
         logits, _ = model(X_train[idx], n_iter=30)
         loss = criterion(logits, y_train[idx])
         optimizer.zero_grad()
@@ -200,7 +204,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -220,6 +225,8 @@ def evaluate(model: nn.Module, analog_substrate: str = "discrete") -> float:
                         continuous-time analog circuits.
     """
     (_, _), (X_test, y_test) = _get_data()
+    X_test, y_test = X_test.to(_DEVICE), y_test.to(_DEVICE)
+    model = model.to(_DEVICE)
     model.eval()
     with torch.no_grad():
         if analog_substrate == "discrete":
@@ -230,7 +237,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "discrete") -> float:
             # sigma_int per step = sqrt(2*kT/C*dt): charge noise on RC integrator.
             dt_relax = 0.5
             sigma_int = math.sqrt(2 * _K_B * _TEMP_K / _CAP_F * dt_relax)
-            z = torch.zeros(X_test.shape[0], model.z_dim)
+            z = torch.zeros(X_test.shape[0], model.z_dim, device=_DEVICE)
             for _ in range(model.max_iter):
                 f_z = model.f_theta(z, X_test)
                 xi = torch.randn_like(z)
@@ -242,7 +249,9 @@ def evaluate(model: nn.Module, analog_substrate: str = "discrete") -> float:
 
 def evaluate_convergence_failure(model: nn.Module) -> float:
     """Convergence failure rate — fraction of inputs where fixed-point diverges."""
-    (_, _), (X_test, y_test) = _get_data()
+    (_, _), (X_test, _) = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
     model.eval()
     if hasattr(model, "convergence_failure_rate"):
         return model.convergence_failure_rate(X_test)
@@ -258,7 +267,10 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
 
     Returns negative MSE so higher = better (consistent with other metrics).
     """
-    (_, _), (X_test, y_test) = _get_data()
+    (_, _), (X_test, _) = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     model.eval()
     digital_baseline.eval()
 
