@@ -18,14 +18,17 @@ dependencies = [
     "seaborn>=0.13",
     "rich>=13.0",
     "scikit-learn>=1.3",
+    "torchdiffeq>=0.2",
+    "scipy>=1.11",
+    "torchvision>=0.16",
 ]
 
 [project.optional-dependencies]
-diffusion = ["diffusers>=0.25"]
 ssm = ["mamba-ssm>=1.0"]
+diffusion = ["diffusers>=0.25"]
 flow = ["diffusers>=0.28"]
-jax = ["jax>=0.4", "jaxlib>=0.4"]
-full = ["diffusers>=0.28", "mamba-ssm>=1.0", "jax>=0.4", "plotly>=5.18"]
+jax = ["jax>=0.4", "jaxlib>=0.4", "diffrax>=0.4"]
+full = ["mamba-ssm>=1.0", "diffusers>=0.28", "jax>=0.4", "jaxlib>=0.4", "diffrax>=0.4", "plotly>=5.18"]
 dev = ["pytest>=7.0", "ruff>=0.1", "mypy>=1.7"]
 
 [tool.setuptools.packages.find]
