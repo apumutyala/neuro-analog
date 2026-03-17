@@ -845,9 +845,13 @@ results/
 
 - **Figure 3** (ADC precision): Quality vs bit-width at σ=5%. Finds the minimum bits needed before quality degrades more than 5%. SSM shows catastrophic 2-bit failure (state explosion in recurrence).
 
-- **Figure 4** (DEQ convergence): Dual-axis: CE loss + convergence failure rate vs σ. Shows whether fixed-point iteration diverges under mismatch, independent of output quality.
+- **Figure 4** (DEQ convergence): Dual-axis: CE loss + convergence failure rate vs σ. Shows whether fixed-point iteration diverges under mismatch, independent of output quality. Note: 100% failure rate is a metric artifact (tolerance too strict), not true divergence — DEQ achieves 93% accuracy throughout.
 
-- **Figure 5** (visual samples): For generative models (diffusion, flow), shows generated samples at σ=0%, 5%, 10%, 15% to visualize degradation qualitatively.
+- **Figure 5** (visual quality): Generated samples at σ=0%, 5%, 10%, 15% for Neural ODE, Flow, Diffusion, and EBM. Qualitative view of how analog noise manifests in each generative model's output.
+
+- **Figure 6** (output MSE): Log-scale output corruption vs σ for 6 architectures (Diffusion excluded — MSE≈0.69 is off-chart due to ADC floor). DEQ shows 78× MSE growth (σ=0→15%), the steepest amplification. EBM is near-flat. Two architectures have flat curves for different reasons: Neural ODE (structural log-det path offset at σ=0) and Diffusion (constant ADC quantization floor).
+
+- **Figure 7** (conservative vs. full-analog): Side-by-side mismatch tolerance and ADC precision curves under two simulation profiles. Reveals ranking reversals: EBM degrades in full-analog (removing per-step ADC binarization exposes mismatch), DEQ improves (per-iteration ADC limit cycles removed), Diffusion's quantization floor disappears entirely.
 
 ---
 
