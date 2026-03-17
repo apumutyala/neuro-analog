@@ -35,6 +35,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _IMG_DIM = 64   # 8x8 = 64
@@ -132,8 +134,10 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
-    betas = _get_betas()
-    _, alphas_bar = _get_alphas(betas)
+    X_train = X_train.to(_DEVICE)
+    model = model.to(_DEVICE)
+    betas = _get_betas()           # stays on CPU — used for math.sqrt() calls
+    _, alphas_bar = _get_alphas(betas)  # stays on CPU
 
     optimizer = optim.Adam(model.parameters(), lr=2e-4)
     batch_size = 256
@@ -141,13 +145,13 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     model.train()
 
     for epoch in range(n_epochs):
-        idx = torch.randperm(len(X_train))[:batch_size]
+        idx = torch.randperm(len(X_train), device=_DEVICE)[:batch_size]
         x0 = X_train[idx]
-        t = torch.randint(0, _T, (batch_size,))
+        t = torch.randint(0, _T, (batch_size,))           # CPU for alphas_bar indexing
         noise = torch.randn_like(x0)
-        alpha_t = alphas_bar[t].unsqueeze(-1)
+        alpha_t = alphas_bar[t].unsqueeze(-1).to(_DEVICE)
         x_t = torch.sqrt(alpha_t) * x0 + torch.sqrt(1 - alpha_t) * noise
-        pred_noise = model(x_t, t)
+        pred_noise = model(x_t, t.to(_DEVICE))
         loss = ((pred_noise - noise) ** 2).mean()
         optimizer.zero_grad()
         loss.backward()
@@ -162,7 +166,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -181,17 +186,19 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
         analog_substrate: "classic" (DDIM) or "cld" (Critically-Damped Langevin / RLC)
     """
     _, X_test = _get_data()
-    betas = _get_betas()
-    alphas, alphas_bar = _get_alphas(betas)
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
+    betas = _get_betas()                      # stays on CPU — used for math.sqrt() calls
+    alphas, alphas_bar = _get_alphas(betas)   # stays on CPU
 
     model.eval()
     n_gen = 500
     n_ddim = 10  # DDIM steps for fast deterministic sampling
-    ddim_steps = torch.linspace(_T - 1, 0, n_ddim + 1).long()
+    ddim_steps = torch.linspace(_T - 1, 0, n_ddim + 1).long()  # stays on CPU for indexing
 
     # Fixed seed: removes z0-sampling variance from baseline, same as Flow fix
     rng = np.random.default_rng(_EVAL_SEED)
-    x = torch.tensor(rng.standard_normal((n_gen, _IMG_DIM)), dtype=torch.float32)
+    x = torch.tensor(rng.standard_normal((n_gen, _IMG_DIM)), dtype=torch.float32, device=_DEVICE)
 
     with torch.no_grad():
         if analog_substrate == "classic":
@@ -199,7 +206,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
                 t_next = ddim_steps[i + 1].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
+                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
 
                 eps = model(x, t_tensor)
                 alpha_curr = alphas_bar[t_curr]
@@ -226,7 +233,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
             dt = 1.0 / n_ddim
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
+                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
                 beta_t = betas[t_curr].item()
                 thermal_noise = torch.randn_like(v)
                 eps = model(x, t_tensor)
@@ -269,7 +276,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
                 alpha_bar_prev = alphas_bar[t_prev].item()
 
                 # Warm start: DDIM x0-prediction then re-noise to t_prev
-                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long)
+                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
                 eps_init = model(x, t_tensor_curr)
                 alpha_curr = alphas_bar[t_curr].item()
                 x0_pred = (x - math.sqrt(1.0 - alpha_curr) * eps_init) / math.sqrt(alpha_curr)
@@ -277,7 +284,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
                           + math.sqrt(1.0 - alpha_bar_prev) * eps_init)
 
                 # Langevin MCMC targeting P_θ(x^{t-1}|x^t)
-                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long)
+                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long, device=_DEVICE)
                 score_denom = math.sqrt(max(1.0 - alpha_bar_prev, 1e-8))
                 for _ in range(K_mix):
                     # ∇ℰ^f: pulls x_prev toward x / √(1-β_t)
@@ -308,26 +315,28 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
     
     Returns negative MSE so higher = better (consistent with other metrics).
     """
-    betas = _get_betas()
-    alphas, alphas_bar = _get_alphas(betas)
-    
+    betas = _get_betas()                      # stays on CPU — used for math.sqrt() calls
+    alphas, alphas_bar = _get_alphas(betas)   # stays on CPU
+
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     model.eval()
     digital_baseline.eval()
-    
+
     n_gen = 100
     n_ddim = 10
-    ddim_steps = torch.linspace(_T - 1, 0, n_ddim + 1).long()
-    
-    x_dig = torch.randn(n_gen, _IMG_DIM)
+    ddim_steps = torch.linspace(_T - 1, 0, n_ddim + 1).long()  # stays on CPU for indexing
+
+    x_dig = torch.randn(n_gen, _IMG_DIM, device=_DEVICE)
     x_analog = x_dig.clone()
-    
+
     with torch.no_grad():
         if analog_substrate == "classic":
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
                 t_next = ddim_steps[i + 1].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
-                
+                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
+
                 eps_dig = digital_baseline(x_dig, t_tensor)
                 eps_analog = model(x_analog, t_tensor)
                 
@@ -347,23 +356,23 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
             M = 1.0
             v_dig = torch.zeros_like(x_dig)
             v_analog = torch.zeros_like(x_analog)
-            dt = 1.0 / n_ddim 
-            
+            dt = 1.0 / n_ddim
+
             for i in range(n_ddim):
                 t_curr = ddim_steps[i].item()
-                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long)
-                beta_t = betas[t_curr]
+                t_tensor = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
+                beta_t = betas[t_curr].item()
                 thermal_noise = torch.randn_like(v_dig)
-                
+
                 eps_dig = digital_baseline(x_dig, t_tensor)
                 eps_analog = model(x_analog, t_tensor)
-                
+
                 # Digital updates
                 dx_d = (beta_t / M) * v_dig * dt
                 dv_d = (-beta_t * x_dig - Gamma * (beta_t / M) * v_dig - eps_dig) * dt + math.sqrt(2 * Gamma * beta_t * dt) * thermal_noise
                 x_dig = x_dig + dx_d
                 v_dig = v_dig + dv_d
-                
+
                 # Analog updates
                 dx_a = (beta_t / M) * v_analog * dt
                 dv_a = (-beta_t * x_analog - Gamma * (beta_t / M) * v_analog - eps_analog) * dt + math.sqrt(2 * Gamma * beta_t * dt) * thermal_noise
@@ -389,7 +398,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
                 alpha_curr = alphas_bar[t_curr].item()
 
                 # Warm start for both
-                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long)
+                t_tensor_curr = torch.full((n_gen,), t_curr, dtype=torch.long, device=_DEVICE)
                 eps_init_dig = digital_baseline(x_dig, t_tensor_curr)
                 eps_init_analog = model(x_analog, t_tensor_curr)
                 x0_dig = (x_dig - math.sqrt(1.0 - alpha_curr) * eps_init_dig) / math.sqrt(alpha_curr)
@@ -397,7 +406,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
                 xp_dig = math.sqrt(alpha_bar_prev) * x0_dig + math.sqrt(1.0 - alpha_bar_prev) * eps_init_dig
                 xp_analog = math.sqrt(alpha_bar_prev) * x0_analog + math.sqrt(1.0 - alpha_bar_prev) * eps_init_analog
 
-                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long)
+                t_tensor_prev = torch.full((n_gen,), max(t_prev, 0), dtype=torch.long, device=_DEVICE)
                 score_denom = math.sqrt(max(1.0 - alpha_bar_prev, 1e-8))
                 for _ in range(K_mix):
                     grad_f_dig = -(sqrt_one_minus_beta / beta_t) * (x_dig - sqrt_one_minus_beta * xp_dig)

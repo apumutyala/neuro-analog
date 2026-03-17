@@ -39,6 +39,8 @@ from sklearn.datasets import make_circles
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from neuro_analog.simulator import analog_odeint_with_logdet, analogize, set_all_noise
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # Integration capacitor physical constants (same as AnalogLinear)
 _K_B = 1.380649e-23   # Boltzmann constant [J/K]
 _TEMP_K = 300.0        # Operating temperature
@@ -93,6 +95,8 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
+    X_train = X_train.to(_DEVICE)
+    model = model.to(_DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     t_span = torch.tensor([1.0, 0.0])  # backward integration for density
     n_steps = 40
@@ -102,7 +106,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
     model.train()
     for epoch in range(n_epochs):
-        idx = torch.randperm(len(X_train))[:batch_size]
+        idx = torch.randperm(len(X_train), device=_DEVICE)[:batch_size]
         x1 = X_train[idx].requires_grad_(True)
 
         # Backward ODE: x1 → z0 tracking log-det
@@ -128,7 +132,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -145,6 +150,8 @@ def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
                              the crossbar thermal noise in AnalogLinear.
     """
     _, X_test = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
     t_span = torch.tensor([1.0, 0.0])
     dt = 1.0 / 40
     noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
@@ -189,12 +196,15 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
     Returns negative MSE so higher = better (consistent with other metrics).
     """
     _, X_test = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     t_span = torch.tensor([1.0, 0.0])
     dt = 1.0 / 40
-    
+
     digital_baseline.eval()
     model.eval()
-    
+
     from neuro_analog.simulator import set_all_noise
     set_all_noise(model, thermal=False, mismatch=True, quantization=True)
     noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
