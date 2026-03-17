@@ -982,7 +982,7 @@ The simulator models three nonidealities at the layer boundary (mismatch, therma
 - **PCM/RRAM conductance drift**: Post-fabrication, phase-change materials drift on a power-law timescale (hours to months). Critical for deployed hardware but out of scope for static tolerance characterization.
 - **Multi-layer coupling**: The simulator treats each layer independently. In practice, a large mismatch-induced signal at layer L can shift the input distribution to layer L+1 in ways that compound non-linearly. This is captured partially by the sweep (which measures end-to-end output degradation) but not in the per-layer model.
 
-These effects are well-understood and modeled in the HCDCv2 / IBM HERMES literature. Extending the simulator to include them is the natural next step for hardware validation studies.
+These effects are well-understood and modeled in the analog AI chip literature (e.g., Ambrogio et al., *Nature* 2018; Nandakumar et al., ISSCC 2020; Le Gallo & Sebastian, *J. Phys. D* 2020). Extending the simulator to include them is the natural next step for hardware validation studies.
 
 ### 9. Architecture Scope: 7 Families, No Recurrent Networks
 
