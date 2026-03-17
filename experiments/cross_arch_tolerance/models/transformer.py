@@ -32,6 +32,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _VOCAB = 32
