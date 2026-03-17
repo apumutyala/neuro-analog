@@ -47,13 +47,16 @@ _N_TRAIN = 2000
 _N_TEST = 500
 _SEED = 42
 
+_DATA_CACHE: dict = {}
+
 def _get_data():
-    from sklearn.datasets import make_moons
-    X, _ = make_moons(n_samples=_N_TRAIN + _N_TEST, noise=0.08, random_state=_SEED)
-    X = (X - X.mean(0)) / X.std(0)
-    X_train = torch.tensor(X[:_N_TRAIN], dtype=torch.float32)
-    X_test = torch.tensor(X[_N_TRAIN:], dtype=torch.float32)
-    return X_train, X_test
+    if not _DATA_CACHE:
+        from sklearn.datasets import make_moons
+        X, _ = make_moons(n_samples=_N_TRAIN + _N_TEST, noise=0.08, random_state=_SEED)
+        X = (X - X.mean(0)) / X.std(0)
+        _DATA_CACHE["train"] = torch.tensor(X[:_N_TRAIN], dtype=torch.float32)
+        _DATA_CACHE["test"] = torch.tensor(X[_N_TRAIN:], dtype=torch.float32)
+    return _DATA_CACHE["train"], _DATA_CACHE["test"]
 
 
 # ── Model ─────────────────────────────────────────────────────────────────
