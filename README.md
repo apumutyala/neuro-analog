@@ -60,14 +60,27 @@ cd neuro-analog
 pip install -e ".[dev]"
 ```
 
-With optional backends for Mamba extraction and Shem evaluation:
+With optional backends:
 ```bash
-pip install -e ".[mamba,jax]"
+pip install -e ".[ssm]"        # Mamba/S4 model extraction
+pip install -e ".[jax]"        # Shem/Diffrax evaluation
+pip install -e ".[diffusion]"  # HuggingFace diffusion model extraction
+pip install -e ".[flow]"       # HuggingFace flow model extraction
+pip install -e ".[full]"       # Everything + Plotly interactive plots
+pip install -e ".[ssm,jax]"    # Most common: Mamba extraction + Shem evaluation
 ```
 
-**Core dependencies:** `torch>=2.1`, `numpy>=1.24`, `matplotlib>=3.8`, `seaborn>=0.13`, `rich>=13.0`, `torchdiffeq`, `torchvision`, `scikit-learn`, `scipy`
+**Core dependencies:** `torch>=2.1`, `transformers>=4.36`, `numpy>=1.24`, `matplotlib>=3.8`, `seaborn>=0.13`, `rich>=13.0`, `scikit-learn>=1.3`, `torchdiffeq>=0.2`, `scipy>=1.11`, `torchvision>=0.16`
 
-**Optional:** `mamba-ssm>=1.0` (Mamba extraction), `jax`, `jaxlib`, `diffrax` (Shem evaluation), `transformers>=4.36` (HuggingFace models), `plotly>=5.18` (interactive plots)
+**Optional extras:**
+
+| Extra | Packages | When you need it |
+|---|---|---|
+| `[ssm]` | `mamba-ssm>=1.0` | `MambaExtractor` — Mamba/S4 model extraction (requires CUDA) |
+| `[jax]` | `jax>=0.4`, `jaxlib>=0.4`, `diffrax>=0.4` | `evaluate_in_shem.py` — native JAX/Diffrax Shem evaluation |
+| `[diffusion]` | `diffusers>=0.25` | `DiffusionExtractor` — HuggingFace diffusion model extraction |
+| `[flow]` | `diffusers>=0.28` | `FlowExtractor` — FLUX / flow matching model extraction |
+| `[full]` | All of the above + `plotly>=5.18` | Complete install including interactive radar/partition plots |
 
 ---
 
@@ -766,10 +779,12 @@ python sweep_all.py --force --n-trials 50
 ```bash
 python plot_results.py
 # Outputs: figures/fig1_mismatch_tolerance.png/.pdf
-#          figures/fig2_noise_ablation.png/.pdf
+#          figures/fig2_ablation.png/.pdf
 #          figures/fig3_adc_precision.png/.pdf
 #          figures/fig4_deq_convergence.png/.pdf
-#          figures/fig5_visual_samples.png/.pdf
+#          figures/fig5_visual_results.png/.pdf
+#          figures/fig6_output_mse.png/.pdf
+#          figures/fig7_profile_comparison.png/.pdf  (conservative vs full-analog)
 ```
 
 **Step 4 (optional): Evaluate continuous models natively in JAX/Diffrax**
