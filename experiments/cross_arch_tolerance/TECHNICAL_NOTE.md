@@ -40,7 +40,7 @@ Everything else (LayerNorm, Softmax, Embedding) stays digital — there is no ef
 W_device = W_nominal ⊙ δ,   δ ~ N(1, σ²·I)
 ```
 
-The same δ persists across all inferences — it is baked into the fabricated conductance values. Source: Shem §4.1.
+The same δ persists across all inferences — it is baked into the fabricated conductance values. This multiplicative mismatch model is standard in analog crossbar literature and matches the formulation in Achour & Wang (2024).
 
 **2. Thermal read noise (dynamic, per inference):**
 
@@ -49,7 +49,7 @@ y = W_device @ x + ε,   ε ~ N(0, σ_thermal² · I)
 σ_thermal = √(kT/C) · √(N_in)
 ```
 
-The √N_in factor models N independent column current contributions at the sense node (Legno §4, Johnson-Nyquist at C = 1 pF, T = 300 K).
+The √N_in factor models N_in independent column current contributions summing at the sense node — a direct consequence of Johnson-Nyquist thermal noise: V_rms² = kT/C per capacitor, and N_in independent sources add in quadrature. At C = 1 pF, T = 300 K, σ_thermal ≈ 6.4×10⁻⁵ V per column.
 
 **3. ADC quantization (deterministic):**
 
@@ -57,7 +57,7 @@ The √N_in factor models N independent column current contributions at the sens
 y_q = round(y · scale) / scale,   scale = (2^n_bits - 1) / (2 · V_ref)
 ```
 
-V_ref = 1.0 V (HCDCv2 hardware spec). Hard quantization models inference; Shem uses Gumbel-Softmax for differentiable training.
+V_ref = 1.0 V, a typical full-swing reference voltage for sense-amplifier ADCs in SRAM/RRAM crossbar designs. Hard quantization models inference-time behavior; Achour & Wang (2024) use Gumbel-Softmax for differentiable training through discrete parameters.
 
 ### 2.2 Seven Models
 
@@ -97,7 +97,7 @@ ADC quantization is applied at the output of **every** AnalogLinear layer. This 
 - For iterative architectures (Neural ODE: ~40 solver steps × L layers; Diffusion: 100 DDPM steps × L layers; DEQ: ~30 fixed-point iterations × L layers; EBM: ~100 Gibbs steps × L layers), every iteration fires every layer's ADC. Errors accumulate not just over depth but over time.
 - Result: quantization sensitivity scales with depth × iterations, making architectures like Neural ODE appear extremely quantization-sensitive regardless of mismatch.
 
-**Interpretation:** Conservative results represent a chip where the analog compute fabric is only used for the MVM, with all routing and buffering done digitally. This is the current design point for most academic analog AI accelerators (e.g., ISSCC 2023 crossbar chips). It is also the design assumption of the HCDC v2 hardware that the Shem physical constants in this simulator are calibrated to.
+**Interpretation:** Conservative results represent a chip where the analog compute fabric is only used for the MVM, with all routing and buffering done digitally. This is the current design point for most academic analog AI accelerators (per-crossbar ADC followed by digital routing to the next array), and the architecture assumed in the Shem simulator's physical constants.
 
 #### Full-Analog (lower bound on quantization error)
 
@@ -176,7 +176,7 @@ Neural ODE: `mismatch.json` shows 1.008/1.016 at σ=5%/15%; `ablation_mismatch.j
 
 **Confirmed findings:**
 
-- **Thermal noise: zero effect on all 7 architectures.** σ_thermal = √(kT/C)·√N_in ≈ 6.4×10⁻⁵·√64 ≈ 5×10⁻⁴ V at C=1pF, T=300K, N_in=64. This is negligible relative to static mismatch at σ=1% (which directly scales all weight values by ±1%). Thermal would matter at C=10fF or N_in>1000, but not at HCDCv2 1pF / demo-scale model dimensions.
+- **Thermal noise: zero effect on all 7 architectures.** σ_thermal = √(kT/C)·√N_in ≈ 6.4×10⁻⁵·√64 ≈ 5×10⁻⁴ V at C=1pF, T=300K, N_in=64. This is negligible relative to static mismatch at σ=1% (which directly scales all weight values by ±1%). Thermal would matter at C=10fF or N_in>1000, but not at C=1pF / demo-scale model dimensions (N_in≤64).
 - **Mismatch dominates for 6 of 7 architectures.** Static weight corruption baked in at fabrication time is the primary failure mode. The one exception is Diffusion.
 - **EBM: no dominant failure mode at σ≤15%.** All three noise sources produce flat ablation curves at ±0.1% throughout. EBM is the most noise-agnostic architecture at this scale.
 - **Diffusion: quantization is the only failure mode.** `ablation_quantization` shows 0.850 at σ=15% (actually 0.850 at ALL σ since the quantization floor is fixed by bit-width, not mismatch level). `ablation_mismatch` is perfectly flat at 0.997–1.005. The conservative ADC profile (per-layer quantization across 100 DDPM steps) is entirely responsible for Diffusion's quality reduction.
@@ -265,7 +265,7 @@ The `extropic_dtm` substrate produced NaN results throughout the sweep — a num
 
 #### Neural ODE: euler vs. rc_integrator
 
-Both substrates show identical mismatch tolerance (threshold ≥15%, quality ≈1.0 at σ=15%). The RC integrator noise √(kT/C) ≈ 6.4×10⁻⁵ V per step over 40 Euler steps contributes no measurable additional degradation beyond weight mismatch. This is a null result: integration capacitor thermal noise is not a relevant design constraint at the HCDCv2 parameter regime (C=1pF, T=300K).
+Both substrates show identical mismatch tolerance (threshold ≥15%, quality ≈1.0 at σ=15%). The RC integrator noise √(kT/C) ≈ 6.4×10⁻⁵ V per step over 40 Euler steps contributes no measurable additional degradation beyond weight mismatch. This is a null result: integration capacitor thermal noise is not a relevant design constraint at C=1pF, T=300K.
 
 #### DEQ: discrete fixed-point vs. Hopfield damped relaxation
 
@@ -421,3 +421,15 @@ Current results from JSON files in `results/` (50 trials for mismatch sweeps, 20
 - DEQ: **0.234** (76× growth from σ=0; steepest amplification of all architectures)
 - Neural ODE: **0.071** (flat — structural log-det path difference, not mismatch)
 - Diffusion: **0.694** (flat — ADC quantization floor constant regardless of σ).
+
+---
+
+## References
+
+1. Achour, S. & Wang, Y. (2024). *Shem: Hardware-Aware Neural Network Optimization via the Adjoint Method.* arXiv:2411.03557.
+2. Wang, Y. & Achour, S. (2023). *Ark: A DSL for Specifying and Validating Analog Compute Paradigms.* arXiv:2309.08774.
+3. Ho, J., Jain, A., & Abbeel, P. (2020). *Denoising Diffusion Probabilistic Models.* NeurIPS 2020.
+4. Bai, S., Kolter, J. Z., & Koltun, V. (2019). *Deep Equilibrium Models.* NeurIPS 2019.
+5. Gu, A., Goel, K., & Ré, C. (2022). *Efficiently Modeling Long Sequences with Structured State Spaces.* ICLR 2022.
+6. Chen, R. T. Q., Rubanova, Y., Bettencourt, J., & Duvenaud, D. (2018). *Neural Ordinary Differential Equations.* NeurIPS 2018.
+7. Liu, X., Gong, C., & Liu, Q. (2022). *Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow.* arXiv:2209.03003.
