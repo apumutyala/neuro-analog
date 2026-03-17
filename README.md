@@ -29,6 +29,7 @@ A cross-architecture analog hardware tolerance simulator and IR extraction frame
 9. [Findings Summary](#findings-summary)
 10. [What's Complete vs. In Progress](#whats-complete-vs-in-progress)
 11. [Connection to Shem / Ark / Unconventional AI](#connection-to-shem--ark--unconventional-ai)
+12. [Next Steps for Compilation to Shem](#next-steps-for-compilation-to-shem)
 
 ---
 
@@ -707,20 +708,20 @@ With accuracy (argmax), a Transformer showed only 0.1% drop at σ=15% — logit 
 
 | Model | Task | Metric | Why this metric |
 |---|---|---|---|
-| **neural_ode.py** | 2D density estimation on make_circles | Negative NLL (log-likelihood) | Continuous; ODE integration directly maps NLL → sensitivity to vector field corruption |
+| **neural_ode.py** | 2D density estimation on make_circles | Log-likelihood | Continuous; ODE integration directly maps log-likelihood → sensitivity to vector field corruption |
 | **ssm.py** | Sequence classification (pattern detection) | Negative cross-entropy | Continuous logit distribution; smoother than accuracy |
 | **transformer.py** | Sequence classification (pattern detection) | Negative cross-entropy | Same task as SSM for direct comparison |
 | **diffusion.py** | Image generation (8×8 MNIST) | Negative nearest-neighbor distance | Sample quality proxy; continuous |
 | **flow.py** | 2D density estimation on make_moons | Negative Wasserstein distance | OT distance between generated and true distribution |
-| **ebm.py** | Reconstruction (8×8 MNIST) | Negative reconstruction MSE | Gibbs chain quality; lower MSE = better RBM |
+| **ebm.py** | Free generation (8×8 MNIST) | Negative nearest-neighbor dist. | Free-chain quality; lower NN dist. = better generative model |
 | **deq.py** | Classification (8×8 MNIST) | Negative cross-entropy + convergence failure rate | CE for quality; failure rate for analog-specific convergence risk |
 
 #### Why small models near capacity?
 
 Overparameterized models have noise margin — redundant weights absorb mismatch without affecting output. We shrink models to operate near capacity (tight weight–output coupling) so the degradation curve is actually informative:
 
-- Transformer: d_model shrunk from 64 → 16
-- SSM: d_model shrunk from 32 → 12
+- Transformer: d_model shrunk from 64 → 24
+- SSM: d_model shrunk from 32 → 16
 - Neural ODE: hidden_dim 64 → 20
 
 At larger scale on harder tasks, the degradation curves would shift right (more tolerant). Our results bound the *worst case* for a given architecture family.
@@ -737,7 +738,7 @@ At larger scale on harder tasks, the degradation curves would shift right (more 
 
 **flow.py** — Rectified flow (straight-line ODE from noise to data). Uses 4 Euler steps. Metric uses random z₀ sampling for Wasserstein estimation, which introduces stochastic baseline variance — this is why the baseline sample count fix (see TECHNICAL_NOTE §6) was critical.
 
-**ebm.py** — Restricted Boltzmann Machine with 100 Gibbs steps for evaluation. `W_fwd` and `W_bwd` are separate `nn.Linear` modules (both analogized independently), modeling the realistic case where a crossbar read in forward vs. transpose mode has different noise characteristics. Activations use registered `nn.Sigmoid()` modules (not `torch.sigmoid()`) so `analogize()` can replace them.
+**ebm.py** — Restricted Boltzmann Machine. Evaluation runs 500 Gibbs burn-in steps from random init, then measures nearest-neighbor distance of 200 free-generated samples to the test set. `W_fwd` and `W_bwd` are separate `nn.Linear` modules (both analogized independently), modeling the realistic case where a crossbar read in forward vs. transpose mode has different noise characteristics. Activations use registered `nn.Sigmoid()` modules (not `torch.sigmoid()`) so `analogize()` can replace them.
 
 **deq.py** — Deep Equilibrium Model. Fixed-point iteration `z_{k+1} = tanh(W_z·z + W_x·x)` run until convergence. Spectral normalization on W_z ensures ρ(∂f/∂z) < 1 (contraction), guaranteeing the fixed point exists. Under mismatch, the effective spectral radius can grow, potentially causing divergence. Uses registered `nn.Tanh()` (not `torch.tanh()`) for the same reason as EBM above.
 
@@ -976,25 +977,83 @@ The seven architectures (Neural ODE, SSM, Diffusion, Flow, EBM, Transformer, DEQ
 
 ## Findings Summary
 
-After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOTE §6 for full errata, §6.5 for confirmed result tables):
+Results from full rerun, 50 trials (conservative profile). See TECHNICAL_NOTE §3 and §6 for full tables. Four sweep types per architecture: mismatch tolerance, noise source ablation, ADC precision, output MSE.
 
-| Architecture | σ threshold @ 10% loss | Dominant noise source | ADC min bits | Notes |
+### Mismatch tolerance (conservative profile, `*_mismatch.json` / `*_ablation_mismatch.json`)
+
+| Architecture | σ threshold @ 10% loss | σ=5% quality | σ=15% quality | Notes |
 |---|---|---|---|---|
-| **Neural ODE** | **≥15%** | Mismatch + **Quantization** | N/A (log-det) | Most mismatch-robust; BUT 8-bit ADC collapses log-density by ~2 nats/sample — quantization corrupts log-det across all ODE steps. Generation-only use is expected to be fine. |
-| **DEQ** | **10%** | Mismatch | **6 bits** | Spectral norm provides graceful degradation (0.975 at σ=5%, 0.744 at σ=15%); 2-bit ADC catastrophic (CE collapses to near-random) with properly trained model |
-| **EBM** | **≥15%** | Mismatch | **4 bits** | Gibbs stochasticity absorbs thermal/quantization; mismatch is dominant at high σ (0.915 at σ=15%); 2-bit catastrophic (−0.476) |
-| **SSM** | **≥15%** | Mismatch | 4–6 bits | Tolerates mismatch well; 2-bit catastrophic (state divergence) |
-| **Transformer** | **≥15%** | Mismatch | 4 bits | 3.2% loss at σ=15%; 2-bit catastrophic (attention collapse) |
-| **Flow** | **~10%** | Mismatch | Undetermined | Velocity field errors accumulate over Euler steps; degrades past 10% at σ≈12% |
-| **Diffusion** | **≥15%** | **Quantization** | **2 bits** | 5.9% constant quality loss from ADC (independent of mismatch); mismatch-immune (ablation: 0.993–1.012 across all σ) |
+| **EBM** | **≥15%** | 0.999 | 0.995 | Flattest mismatch curve; Gibbs sampling self-corrects per step |
+| **SSM** | **≥15%** | 0.999 | 0.996 | Diagonal state recurrence; clean monotonic degradation |
+| **Transformer** | **≥15%** | 0.997 | 0.981 | LayerNorm absorbs scale perturbations |
+| **Neural ODE** | **≥15%** | 1.008 | 1.016 | High-variance metric; both runs (1.016, 0.902) consistent with near-zero trend |
+| **Diffusion** | **≥15%†** | ~1.000 | ~1.000 | **Mismatch-immune** (ablation flat 0.997–1.005); quantization is the only failure mode |
+| **DEQ** | **12%** | 0.982 | 0.766 | Spectral norm keeps ρ<1 but threshold degrades; 0.766 at σ=15% |
+| **Flow** | **10%†** | 0.978 | 0.585 | **Worst mismatch tolerance**; velocity field drift, no error correction |
 
-**5 of 7 architectures (Neural ODE, EBM, SSM, Transformer, Diffusion) never cross the 10% mismatch loss threshold up to σ=15%**. DEQ crosses at σ=10% (0.744 at σ=15%); Flow crosses at σ≈12% (ablation). Previous DEQ results (CE≈2.337, near-random) were invalid — silent fallback to random-label training; retrained on sklearn digits, CE=0.177, ~93% accuracy. Previous EBM/Diffusion results were from Gaussian blob fallback training; corrected rerun on real digit data changes EBM from near-perfect to 0.915@σ=15%, and Diffusion from "0% threshold, ≥8-bit" to "≥15% threshold, 2-bit sufficient."
+†Values from `*_ablation_mismatch.json` — generation metric baseline variance makes full sweep unreliable for these two.
 
-**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance.
+**Thermal noise: zero effect on all 7 architectures.** σ_thermal = √(kT/C)·√N_in ≈ 5×10⁻⁴ V at C=1pF is negligible vs. weight mismatch at any σ tested. Flow is the weakest architecture; EBM is the most robust.
 
-**Quantization is co-dominant for Neural ODE and Diffusion** — but the mechanism differs. For Diffusion, 5.9% constant quality loss from ADC, independent of mismatch (100-step score network accumulation). For Neural ODE, ADC noise corrupts the log-det Jacobian in the CNF backward pass; generation-only use is expected to tolerate quantization better.
+### ADC minimum bits at σ=5% (`*_adc.json`)
 
-**Diffusion requires only 2-bit ADC; EBM requires 4-bit.** Prior claim of "EBM tolerates 2-bit" was an artifact of blob-data training. With real digit data, EBM 2-bit: catastrophic (−0.476). Diffusion 2-bit: 1.002 (best in class for ADC tolerance among generative models). DEQ requires 6-bit (2-bit: −10.4).
+| Architecture | Min bits (≥95%) | 2-bit quality | Failure mode at 2-bit |
+|---|---|---|---|
+| **Neural ODE** | **2 bits** | 0.998 | None — log-det correctly isolates quantization |
+| **EBM** | **2 bits** | 0.988 | None — Gibbs sampling inherently near-binary |
+| **Transformer** | **4 bits** | 0.942 | Attention pattern collapse |
+| **SSM** | **4 bits** | 0.762 | State recurrence diverges across 64 timesteps |
+| **DEQ** | **6 bits** | **−2.333** | Fixed-point **limit cycle** — z_k oscillates between quantization bins |
+| **Diffusion** | **N/A** | 0.927 | Conservative profile floor (per-layer ADC × 100 DDPM steps); use full-analog profile |
+| **Flow** | **2 bits†** | 0.990 | None (Wasserstein metric insensitive to quantization) |
+
+DEQ's 6-bit minimum is the hardest hardware constraint of all 7 architectures. The 2-bit failure is not accuracy degradation — it's a **convergence failure**: the iterative solver oscillates rather than converges.
+
+### Full-analog profile reveals ranking reversals
+
+The conservative profile (ADC at every layer) is the wrong model for ODE-native analog substrates. Under full-analog (single ADC at final readout):
+
+| Architecture | Conservative threshold | Full-analog threshold | Change |
+|---|---|---|---|
+| EBM | ≥15% (flat) | **10%** | **Degrades** — removing per-step ADC binarization exposes mismatch in continuous sigmoid activations |
+| DEQ | 12% | **≥15%** | **Improves** — removing per-iteration ADC eliminates limit cycles |
+| Diffusion | N/A (ADC floor) | **≥15%, all bit-widths OK** | Resolves entirely — ADC floor disappears |
+| SSM, Transformer, Neural ODE, Flow | Similar | Similar | Minimal change |
+
+The EBM/DEQ reversal is the most hardware-architecturally significant finding: which substrate model you use changes the **ranking**, not just the numbers.
+
+### CLD substrate: Diffusion becomes fully noise-agnostic
+
+Under the CLD (RLC/Langevin circuit) substrate — where thermal fluctuations are the diffusion noise, not a separate noise source:
+
+- Mismatch: flat 0.998–1.000 (same as classic)
+- **Thermal: flat 1.000** (circuit noise = generation noise = no net effect)
+- **Quantization: flat 0.998 at all bit-widths including 2-bit**
+
+CLD diffusion is 2-bit tolerant and immune to all three noise sources simultaneously. This is the appropriate model for hardware where the score network runs on a physical Langevin substrate.
+
+### Output MSE: how much does each architecture's output trajectory diverge?
+
+| Architecture | MSE at σ=0 | MSE at σ=15% | Interpretation |
+|---|---|---|---|
+| EBM | ~0.000 | 0.0009 | Gibbs equilibrium absorbs perturbations |
+| Transformer | 0.00002 | 0.019 | Clean monotonic growth — most interpretable signal |
+| SSM | 0.001 | 0.023 | Similar to Transformer |
+| Flow | 0.029 | 0.091 | Moderate growth; z0-seed baseline offset |
+| Neural ODE | **0.070** | **0.071** | **Flat** — structural offset from log-det path differences, not mismatch |
+| DEQ | 0.003 | **0.234** | Steepest growth — fixed-point iteration amplifies output divergence |
+| Diffusion | **0.695** | **0.694** | **Flat** — conservative ADC floor dominates; mismatch adds nothing |
+
+Two architectures show flat output MSE: Neural ODE (structural log-det difference at σ=0) and Diffusion (ADC quantization floor at σ=0). DEQ shows 78× MSE growth from σ=0 to σ=15% — the largest amplification factor of any architecture.
+
+### DEQ hopfield substrate outperforms discrete fixed-point
+
+| Substrate | σ threshold | σ=15% quality | Mechanism |
+|---|---|---|---|
+| Discrete (fixed-point iteration) | 12% | 0.766 | No damping; mismatch pushes ρ toward instability |
+| **Hopfield (damped RC relaxation)** | **≥15%** | **0.849** | `-z` damping term acts as physical regularizer |
+
+The Hopfield substrate brings DEQ from a mid-table result to the top tier. Both require 6-bit ADC.
 
 ---
 
@@ -1073,4 +1132,34 @@ Sources:
 - [Shem paper](https://arxiv.org/abs/2411.03557)
 - [Ark paper](https://arxiv.org/abs/2309.08774)
 - [WangYuNeng/Ark on GitHub](https://github.com/WangYuNeng/Ark)
+
+---
+
+## Next Steps for Compilation to Shem
+
+Each of the seven architectures has a different relationship to the ODE form that Shem requires. The table below summarizes current status and what remains.
+
+| Architecture | ODE-compatible | Current status | What's needed |
+|---|---|---|---|
+| Neural ODE | Yes | **Done** — runs through `analog_odeint_with_logdet`; RC integrator substrate implemented | Nothing; ready for Shem adjoint today |
+| Flow | Yes | **Done** — `v_theta(t, x)` runs through `analog_odeint`; RC integrator substrate implemented | Nothing; ready for Shem adjoint today |
+| Diffusion | Effectively yes | **Done** — three substrates: classic DDIM (deterministic reverse ODE), CLD (RLC/Langevin), Extropic DTM (Langevin MCMC per step) | Probability flow ODE form could replace manual DDIM loop for cleaner `analog_odeint` integration; not blocking |
+| DEQ | Yes | **Done** — Hopfield substrate IS the continuous-time ODE: `dz/dt = -z + f(z,x)`; fixed-point iteration is its discrete approximation | Hopfield substrate already runs the continuous-time form; Shem export scaffold exists |
+| SSM | Yes, partially | **Gap** — `A_c` continuous-time parameters are already learned; discrete bilinear recurrence is a numerical approximation of `dh/dt = A_c·h + B_c·u(t)` | `analog_odeint` needs time-varying forcing term support (`f(t, h, u_t)`); once added, SSM becomes a linear ODE driven by the input sequence — cleanly Shem-exportable |
+| Transformer | No | **Structural mismatch** — attention is a set operation over tokens, not a dynamical system; sequence dimension is not continuous time | Would require continuous-depth reformulation (e.g., neural ODE over layers); entirely different architecture |
+| EBM (RBM) | Possible via Langevin | **Major redesign** — discrete Gibbs chain is not an ODE; the energy landscape supports Langevin dynamics `dx = -∇E(x)dt + √(2T)dW`, which is Shem-compatible and Extropic-aligned | Replace CD training with score matching; replace Gibbs sampler with Langevin integrator; substantial but well-defined path |
+
+### Immediate next step: SSM forcing term
+
+The highest-value near-term addition is extending `analog_odeint` to accept a time-varying input signal `u(t)`, enabling the SSM to run as a continuous-time ODE:
+
+```
+dh/dt = A_c · h(t) + B_c · u(t)
+```
+
+The `A_c` and `B_c` parameters are already learned and available in `_S4DLayer._get_discrete_params()`. The bilinear transform to `A_bar` was always a discretization convenience — the continuous-time form is more physically accurate for analog RC integrators and directly maps onto the Shem optimizer's adjoint method.
+
+### EBM Langevin path
+
+Replacing the RBM's Gibbs sampler with Langevin dynamics would make the EBM the most physically grounded model in the suite — the thermal noise `√(2T)dW` is not injected but physically present in subthreshold transistors, exactly as described in the Extropic DTM paper (arXiv:2510.23972). This is a meaningful architectural change but the energy function `E(v,h) = -v^T W h - b^T v - c^T h` is already implemented and differentiable.
 - [Unconventional AI](https://unconv.ai)

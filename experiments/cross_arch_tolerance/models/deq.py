@@ -27,6 +27,7 @@ Metric: Classification accuracy + convergence failure rate (tracked separately).
 evaluate() returns accuracy. evaluate_convergence() returns failure rate.
 """
 
+import itertools
 import math
 import os
 import sys
@@ -84,8 +85,13 @@ def _load_mnist_8x8(split="train", n=None):
     idx = idx[:n]
     return torch.tensor(X[idx]), torch.tensor(y[idx])
 
+_DATA_CACHE: dict = {}
+
 def _get_data():
-    return _load_mnist_8x8("train"), _load_mnist_8x8("test")
+    if not _DATA_CACHE:
+        _DATA_CACHE["train"] = _load_mnist_8x8("train")
+        _DATA_CACHE["test"] = _load_mnist_8x8("test")
+    return _DATA_CACHE["train"], _DATA_CACHE["test"]
 
 
 # ── Model ─────────────────────────────────────────────────────────────────
@@ -153,7 +159,7 @@ class _DEQClassifier(nn.Module):
         max_iter = max_iter or self.max_iter
         tol = tol or self.tol
         z = torch.zeros(x.shape[0], self.z_dim, device=x.device)
-        converged = torch.zeros(x.shape[0], dtype=torch.bool)
+        converged = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         scale = math.sqrt(self.z_dim)
 
         with torch.no_grad():
@@ -224,34 +230,34 @@ def evaluate(model: nn.Module, analog_substrate: str = "discrete") -> float:
                         than divergence, which is physically more realistic for
                         continuous-time analog circuits.
     """
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
     (_, _), (X_test, y_test) = _get_data()
-    X_test, y_test = X_test.to(_DEVICE), y_test.to(_DEVICE)
-    model = model.to(_DEVICE)
+    X_test, y_test = X_test.to(device), y_test.to(device)
     model.eval()
     with torch.no_grad():
-        if analog_substrate == "discrete":
-            logits, _ = model(X_test)
-        elif analog_substrate == "hopfield":
+        if analog_substrate == "hopfield":
             # Damped relaxation: dz/dt = -z + f(z,x) + sqrt(2kT/C)*dW
             # dt=0.5 gives stable convergence in ~10 steps with spectral norm < 1.
             # sigma_int per step = sqrt(2*kT/C*dt): charge noise on RC integrator.
             dt_relax = 0.5
             sigma_int = math.sqrt(2 * _K_B * _TEMP_K / _CAP_F * dt_relax)
-            z = torch.zeros(X_test.shape[0], model.z_dim, device=_DEVICE)
+            z = torch.zeros(X_test.shape[0], model.z_dim, device=device)
             for _ in range(model.max_iter):
                 f_z = model.f_theta(z, X_test)
                 xi = torch.randn_like(z)
                 z = z + dt_relax * (-z + f_z) + sigma_int * xi
             logits = model.readout(z)
+        else:  # "discrete" or any unrecognized substrate
+            logits, _ = model(X_test)
         loss = nn.functional.cross_entropy(logits, y_test)
     return -loss.item()
 
 
 def evaluate_convergence_failure(model: nn.Module) -> float:
     """Convergence failure rate — fraction of inputs where fixed-point diverges."""
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
     (_, _), (X_test, _) = _get_data()
-    X_test = X_test.to(_DEVICE)
-    model = model.to(_DEVICE)
+    X_test = X_test.to(device)
     model.eval()
     if hasattr(model, "convergence_failure_rate"):
         return model.convergence_failure_rate(X_test)
@@ -267,10 +273,10 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
 
     Returns negative MSE so higher = better (consistent with other metrics).
     """
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
     (_, _), (X_test, _) = _get_data()
-    X_test = X_test.to(_DEVICE)
-    model = model.to(_DEVICE)
-    digital_baseline = digital_baseline.to(_DEVICE)
+    X_test = X_test.to(device)
+    digital_baseline = digital_baseline.to(device)
     model.eval()
     digital_baseline.eval()
 

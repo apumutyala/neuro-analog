@@ -69,8 +69,13 @@ def _load_mnist_8x8_binary(split="train", n=None):
     n = n or len(idx)
     return torch.tensor(X[idx[:n]])
 
+_DATA_CACHE: dict = {}
+
 def _get_data():
-    return _load_mnist_8x8_binary("train", 5000), _load_mnist_8x8_binary("test", 500)
+    if not _DATA_CACHE:
+        _DATA_CACHE["train"] = _load_mnist_8x8_binary("train", 5000)
+        _DATA_CACHE["test"] = _load_mnist_8x8_binary("test", 500)
+    return _DATA_CACHE["train"], _DATA_CACHE["test"]
 
 
 # ── Model ─────────────────────────────────────────────────────────────────
