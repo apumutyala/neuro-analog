@@ -2,16 +2,16 @@
 
 Architecture: 2 transformer layers, dim=24, 2 heads, FFN=48 with ReLU.
 Task: Classify whether a 64-token sequence contains adjacent tokens [3, 5].
-Metric: Negative cross-entropy loss [HIGHER = BETTER].
+Metric: Negative cross-entropy loss [higher = better].
 
 IMPORTANT: Built from scratch using nn.Linear directly (NOT nn.TransformerEncoder).
 analogize() replaces nn.Linear → AnalogLinear, nn.ReLU → AnalogReLU.
 Softmax (in attention) stays digital. LayerNorm stays digital.
 
-DOUBT NOTED: The directive says "nn.ReLU or nn.GELU". We use ReLU since it's
-analog-native (AnalogReLU uses a diode-connected transistor model), making the
-analog fraction higher and the experiment more interesting. GELU would be DIGITAL,
-showing less degradation from the linear layers and more from the crossing penalty.
+We use ReLU (not GELU) since it's analog-native — AnalogReLU uses a diode-connected
+transistor model, making the analog fraction higher and the experiment more sensitive.
+GELU would be DIGITAL, showing less degradation from the linear layers and more from
+the domain-crossing penalty.
 
 Synthetic dataset: sequences of 64 tokens from vocab_size=32.
 Pattern: sequence contains tokens [3, 5] adjacent anywhere in the sequence.

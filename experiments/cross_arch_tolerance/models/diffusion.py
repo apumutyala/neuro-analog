@@ -7,20 +7,20 @@ Architecture: Score network is 3-layer MLP (NOT U-Net).
 
 Metric: Reconstruction quality proxy — generate 500 samples via DDIM,
   compute mean distance from each generated sample to its nearest test neighbor.
-  Negate so HIGHER = BETTER (lower distance = higher quality).
+  Negate so higher = better (lower distance = higher quality).
 
-DOUBT NOTED: FID requires Inception network features (too heavy for CPU).
+FID requires Inception network features (too heavy for CPU).
 We use the "simplified Wasserstein" proxy: for each generated sample x_gen,
 find the nearest test sample by L2 distance. Average minimum distance.
 This measures whether generated samples cover the data manifold.
 Perfect generator: distance → 0. Random noise: distance >> 0.
 
-DOUBT NOTED: The directive says to use DDIM sampling (deterministic ODE).
+We use DDIM sampling (deterministic reverse ODE).
 DDIM reduces T=100 stochastic DDPM steps to ~10 deterministic steps.
 This makes the evaluation reproducible across analog trials.
 We use 10 DDIM steps for evaluation speed.
 
-DOUBT NOTED: 8x8 MNIST is not in torchvision directly. We downsample 28x28 MNIST
+8x8 MNIST is not in torchvision directly. We downsample 28x28 MNIST
 using bilinear interpolation. If torchvision is not installed, we generate
 synthetic Gaussian blob data that approximates MNIST's structure.
 """

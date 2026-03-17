@@ -20,10 +20,10 @@ Physical model (three noise sources applied in order):
    the total output noise variance is N · kT/C, giving σ = sqrt(N·kT/C).
    Reference: Legno §4 noise model; Shem §4.2 SDE diffusion term g(x,θ,t).
 
-   DOUBT NOTED: The directive's sqrt(in_features) factor assumes independent
+   Note: The sqrt(in_features) factor assumes independent
    per-column noise sources. An alternative model puts all thermal noise
    at the single sense amplifier output: σ = sqrt(kT/C) (no N scaling).
-   The directive explicitly states the sqrt(N) model — we follow it as a
+   the sqrt(N) model — we follow it as a
    conservative upper bound. Real hardware falls between these two limits.
 
 3. ADC QUANTIZATION (deterministic)

@@ -21,17 +21,17 @@ Additional DC drift:
   the op-amp. Modeled as: x_t += drift_sigma * sqrt(dt) per step (diffusive drift)
   or alternatively as a deterministic offset per unit time.
 
-DOUBT NOTED: The directive says "Plus accumulated DC drift: y_t += drift_per_dim * t"
-which implies deterministic linear drift, not stochastic. We implement both interpretations:
+A DC drift term (y_t += drift_per_dim * t) can model RC integrator offset accumulation.
+We implement both interpretations of drift:
 - drift_sigma > 0: stochastic drift (Brownian motion offset, more physically accurate)
 - drift_rate > 0: deterministic linear drift per unit time
 
 For the experiment, drift_sigma=0 and drift_rate=0 (we already model noise in AnalogLinear).
 The drift parameters are provided for completeness and ablation.
 
-DOUBT NOTED: The directive says to also provide a wrapper for torchdiffeq if installed.
-torchdiffeq is not a standard requirement and adds complexity. We implement the Euler
-loop and provide a `try: import torchdiffeq` wrapper that patches odeint if available.
+A torchdiffeq wrapper is provided if that package is installed, enabling adaptive
+solvers. The default is a pure-PyTorch fixed-step Euler loop, which is sufficient
+for the demo scale (2D, ≤50 steps) and avoids the optional dependency.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ def analog_odeint_with_logdet(
     The divergence div(f) = tr(∂f/∂y) is computed exactly via autograd.
     This is cheap for low-dimensional state (2D for make_circles demo).
 
-    DOUBT NOTED: Computing the exact Jacobian trace via autograd doubles the
+    Computing the exact Jacobian trace via autograd doubles the
     computation time per step. For the 2D demo model this is negligible.
     For higher dimensions, use Hutchinson's trace estimator instead:
       tr(J) ≈ E_v[v^T J v],  v ~ N(0,I)  (unbiased, O(1) backward passes)

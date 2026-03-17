@@ -7,15 +7,16 @@ Training: Flow matching loss — minimize ||v_theta(x_t, t) - (x1 - x0)||^2
 Evaluation: 4 Euler steps (like FLUX-schnell) to generate samples.
 Metric: Negative 1D Wasserstein distance between generated and test samples.
   Compute on x-coordinate and y-coordinate separately, average.
-  HIGHER = BETTER (smaller distance = better generation quality).
+  higher = better (smaller distance = better generation quality).
 
-DOUBT NOTED: 2D Wasserstein is hard to compute exactly (requires solving an
+2D Wasserstein is hard to compute exactly (requires solving an
 optimal transport problem). We use a 1D proxy: sort generated and test samples
 by their x/y coordinates independently and compute average L1 distance between
 sorted arrays. This approximates the 1D Earth Mover's Distance.
 scipy.stats.wasserstein_distance computes this exactly for 1D distributions.
 """
 
+import math
 import os
 import sys
 import torch
@@ -25,6 +26,12 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from neuro_analog.simulator import analog_odeint
+
+# RC integrator noise (same physical model as neural_ode.py)
+_K_B = 1.380649e-23
+_TEMP_K = 300.0
+_CAP_F = 1e-12
+_SIGMA_RC = math.sqrt(_K_B * _TEMP_K / _CAP_F)
 
 try:
     from scipy.stats import wasserstein_distance as _wd
@@ -111,7 +118,7 @@ def load_model(save_path: str) -> nn.Module:
 _EVAL_SEED = 42  # Fixed seed for z0 sampling — eliminates baseline variance from z0
 
 
-def evaluate(model: nn.Module) -> float:
+def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
     """Generate samples with 4 Euler steps, compute negative sliced Wasserstein distance.
 
     Uses sliced Wasserstein (average over 50 random 1D projections) instead of
@@ -120,15 +127,22 @@ def evaluate(model: nn.Module) -> float:
 
     Fixed z0 seed eliminates the z0-sampling variance that inflated baseline
     variance in earlier runs (see §3.1 ‡ footnote in TECHNICAL_NOTE.md).
+
+    Args:
+        analog_substrate:
+          "euler"         — noiseless integration step (default).
+          "rc_integrator" — adds sqrt(kT/C) Johnson-Nyquist noise per Euler step,
+                            modeling the integration capacitor of an RC-circuit ODE solver.
     """
     _, X_test = _get_data()
     n_gen = 500
     rng_z = np.random.default_rng(_EVAL_SEED)
     z0 = torch.tensor(rng_z.standard_normal((n_gen, 2)), dtype=torch.float32)
     t_span = torch.tensor([0.0, 1.0])
+    noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
 
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma).detach().numpy()
     test_np = X_test.numpy()
 
     if _HAS_SCIPY:
@@ -178,7 +192,7 @@ def evaluate_sliced_wasserstein(model: nn.Module, n_projections: int = 50, seed:
     return -float(np.mean(distances))
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler") -> float:
     """Compute MSE between analog and digital baseline generated samples.
     
     Returns negative MSE so higher = better (consistent with other metrics).
@@ -191,8 +205,9 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
     digital_baseline.eval()
     
     from neuro_analog.simulator import analog_odeint
-    dig_samples = analog_odeint(digital_baseline, z0, t_span, dt=0.25)
-    analog_samples = analog_odeint(model, z0, t_span, dt=0.25)
+    noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
+    dig_samples = analog_odeint(digital_baseline, z0, t_span, dt=0.25, noise_sigma=0.0)
+    analog_samples = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma)
     
     mse = ((dig_samples.detach() - analog_samples.detach()) ** 2).mean().item()
     return -mse

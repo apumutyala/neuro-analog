@@ -2,7 +2,7 @@
 
 Architecture: f_theta: [2+1 → 64 → 64 → 2] MLP with tanh (time-augmented).
 Task: Density estimation on 2D make_circles via CNF change-of-variables.
-Metric: Negative log-likelihood = log p(x_test) [HIGHER = BETTER].
+Metric: Negative log-likelihood = log p(x_test) [higher = better].
 
 CNF training:
   Push data x1 BACKWARD through the ODE (t: 1 → 0) to get z0 ~ N(0,I).
@@ -16,12 +16,12 @@ Analog evaluation:
   Push test x1 backward through analogized f_theta → z0_est.
   Compute NLL on z0_est under N(0,I) + accumulated log-det.
 
-DOUBT NOTED: True CNF evaluation requires integrating BACKWARD through the
+True CNF evaluation requires integrating BACKWARD through the
 analog model including the log-det tracking. The analog model introduces
 stochastic thermal noise, making the log-det estimate noisy. We average over
 the n_trials from the sweep to get stable statistics.
 
-DOUBT NOTED: We use Euler ODE (not an adaptive solver) for reproducibility.
+We use Euler ODE (not an adaptive solver) for reproducibility.
 torchdiffeq is optional. For the demo scale (2D, 50 steps), Euler is sufficient.
 """
 
@@ -132,11 +132,22 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
-def evaluate(model: nn.Module) -> float:
-    """Compute log-likelihood on test set. Higher = better."""
+def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
+    """Compute log-likelihood on test set. Higher = better.
+
+    Args:
+        analog_substrate:
+          "euler"          — current default; integration step is noiseless.
+          "rc_integrator"  — adds Johnson-Nyquist noise on each Euler integration
+                             step: dx += sqrt(kT/C * |dt|) * xi, xi ~ N(0,I).
+                             Models the charge noise on the integrating capacitor
+                             of an RC-circuit ODE solver, physically separate from
+                             the crossbar thermal noise in AnalogLinear.
+    """
     _, X_test = _get_data()
     t_span = torch.tensor([1.0, 0.0])
     dt = 1.0 / 40
+    noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
     model.eval()
 
     # Disable thermal noise during log-det computation — stochastic noise makes the
@@ -155,7 +166,7 @@ def evaluate(model: nn.Module) -> float:
 
     with torch.enable_grad():  # needed for log-det computation
         z0, delta_logp = analog_odeint_with_logdet(
-            model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=0.0
+            model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=noise_sigma
         )
 
     for name, m in model.named_modules():
@@ -168,7 +179,7 @@ def evaluate(model: nn.Module) -> float:
     return float(log_px.mean().item())  # log-likelihood (higher = better)
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler") -> float:
     """Compute MSE between analog and digital baseline outputs.
     
     Args:
@@ -186,10 +197,11 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
     
     from neuro_analog.simulator import set_all_noise
     set_all_noise(model, thermal=False, mismatch=True, quantization=True)
-    
+    noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
+
     with torch.enable_grad():
         z0_dig, _ = analog_odeint_with_logdet(digital_baseline, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=0.0)
-        z0_analog, _ = analog_odeint_with_logdet(model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=0.0)
+        z0_analog, _ = analog_odeint_with_logdet(model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=noise_sigma)
     
     mse = ((z0_dig.detach() - z0_analog.detach()) ** 2).mean().item()
     return -mse  # Negative so higher = better
