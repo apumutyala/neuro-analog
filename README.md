@@ -982,19 +982,19 @@ After correcting all pipeline bugs and running with 50 trials (see TECHNICAL_NOT
 |---|---|---|---|---|
 | **Neural ODE** | **≥15%** | Mismatch + **Quantization** | N/A (log-det) | Most mismatch-robust; BUT 8-bit ADC collapses log-density by ~2 nats/sample — quantization corrupts log-det across all ODE steps. Generation-only use is expected to be fine. |
 | **DEQ** | **10%** | Mismatch | **6 bits** | Spectral norm provides graceful degradation (0.975 at σ=5%, 0.744 at σ=15%); 2-bit ADC catastrophic (CE collapses to near-random) with properly trained model |
-| **EBM** | **≥15%** | All equal | **2 bits** | Gibbs stochasticity masks all noise sources equally |
+| **EBM** | **≥15%** | Mismatch | **4 bits** | Gibbs stochasticity absorbs thermal/quantization; mismatch is dominant at high σ (0.915 at σ=15%); 2-bit catastrophic (−0.476) |
 | **SSM** | **≥15%** | Mismatch | 4–6 bits | Tolerates mismatch well; 2-bit catastrophic (state divergence) |
 | **Transformer** | **≥15%** | Mismatch | 4 bits | 3.2% loss at σ=15%; 2-bit catastrophic (attention collapse) |
 | **Flow** | **~10%** | Mismatch | Undetermined | Velocity field errors accumulate over Euler steps; degrades past 10% at σ≈12% |
-| **Diffusion** | **0%** | **Quantization** | ≥8 bits | 15.5% loss from ADC alone (8-bit); 100-step cascade compounds quantization errors |
+| **Diffusion** | **≥15%** | **Quantization** | **2 bits** | 5.9% constant quality loss from ADC (independent of mismatch); mismatch-immune (ablation: 0.993–1.012 across all σ) |
 
-**4 of 7 architectures (Neural ODE, EBM, SSM, Transformer) never cross the 10% mismatch loss threshold up to σ=15%** (the maximum tested). DEQ crosses the 10% threshold at σ=10% (0.744 at σ=15%). This is a genuine finding about small-scale robustness with normalization active. Previous DEQ results showing ≥15% tolerance were invalid — caused by a silent fallback to random-label training when torchvision was unavailable; retrained on sklearn digits (8×8, 10-class), CE=0.177, ~93% accuracy.
+**5 of 7 architectures (Neural ODE, EBM, SSM, Transformer, Diffusion) never cross the 10% mismatch loss threshold up to σ=15%**. DEQ crosses at σ=10% (0.744 at σ=15%); Flow crosses at σ≈12% (ablation). Previous DEQ results (CE≈2.337, near-random) were invalid — silent fallback to random-label training; retrained on sklearn digits, CE=0.177, ~93% accuracy. Previous EBM/Diffusion results were from Gaussian blob fallback training; corrected rerun on real digit data changes EBM from near-perfect to 0.915@σ=15%, and Diffusion from "0% threshold, ≥8-bit" to "≥15% threshold, 2-bit sufficient."
 
-**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance. Static conductance mismatch is the dominant failure mode for 5 of 7 architectures.
+**Thermal noise: zero effect for all architectures.** kT/C noise at C=1 pF is negligible relative to static mismatch variance.
 
-**Quantization is co-dominant for Neural ODE and Diffusion.** Both show large quality losses from 8-bit ADC that are constant across all mismatch levels and all bit-widths tested. For Neural ODE this is specifically a CNF log-det estimation issue (generation-only use is expected to tolerate quantization better). For Diffusion, the 100-step DDPM cascade compounds rounding errors throughout.
+**Quantization is co-dominant for Neural ODE and Diffusion** — but the mechanism differs. For Diffusion, 5.9% constant quality loss from ADC, independent of mismatch (100-step score network accumulation). For Neural ODE, ADC noise corrupts the log-det Jacobian in the CNF backward pass; generation-only use is expected to tolerate quantization better.
 
-**Why EBM tolerates 2-bit ADC when DEQ, SSM, and Transformer cannot:** Stochastic Gibbs sampling (EBM) absorbs coarse quantization without catastrophic collapse. DEQ's fixed-point contraction (ρ(∂f/∂z) < 1) guarantees convergence but not output fidelity under severe quantization — CE collapses to near-random at 2-bit ADC (normalized = −10.4). SSM recurrence and Transformer attention patterns similarly require sufficient intermediate precision.
+**Diffusion requires only 2-bit ADC; EBM requires 4-bit.** Prior claim of "EBM tolerates 2-bit" was an artifact of blob-data training. With real digit data, EBM 2-bit: catastrophic (−0.476). Diffusion 2-bit: 1.002 (best in class for ADC tolerance among generative models). DEQ requires 6-bit (2-bit: −10.4).
 
 ---
 

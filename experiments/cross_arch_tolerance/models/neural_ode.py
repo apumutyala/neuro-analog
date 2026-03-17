@@ -141,6 +141,8 @@ def evaluate(model: nn.Module) -> float:
     for m in model.modules():
         if hasattr(m, "_use_thermal"):
             m._use_thermal = False
+        if hasattr(m, "_use_quantization"):
+            m._use_quantization = False
 
     with torch.enable_grad():  # needed for log-det computation
         z0, delta_logp = analog_odeint_with_logdet(
