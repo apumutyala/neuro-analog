@@ -54,7 +54,7 @@ This codebase:
 ## Installation
 
 ```bash
-git clone <repo>
+git clone https://github.com/apumutyala/neuro-analog
 cd neuro-analog
 pip install -e ".[dev]"
 ```
