@@ -14,6 +14,10 @@ Usage:
     python experiments/cross_arch_tolerance/sweep_all.py
     python experiments/cross_arch_tolerance/sweep_all.py --only neural_ode
     python experiments/cross_arch_tolerance/sweep_all.py --n-trials 20  # faster
+    python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate cld
+    python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate extropic_dtm
+    python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate all  # all 3 substrates
+    python experiments/cross_arch_tolerance/sweep_all.py --analog-domain both  # conservative + full_analog
 """
 
 import os
@@ -31,7 +35,7 @@ _RESULTS_DIR = Path(__file__).parent / "results"
 _RESULTS_DIR.mkdir(exist_ok=True)
 
 from models import neural_ode, transformer, diffusion, flow, ebm, deq, ssm
-from neuro_analog.simulator import mismatch_sweep, adc_sweep, ablation_sweep, resample_all_mismatch, set_all_noise, analogize
+from neuro_analog.simulator import mismatch_sweep, adc_sweep, ablation_sweep, resample_all_mismatch, set_all_noise, analogize, configure_analog_profile
 
 _MODELS = [
     ("neural_ode",  neural_ode),
@@ -47,19 +51,27 @@ _SIGMA_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
 _BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
 
 
-def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog_substrate: str = "classic") -> None:
+def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog_substrate: str = "classic", analog_domain: str = "conservative") -> None:
     ckpt_path = str(_CKPT_DIR / f"{name}.pt")
     if not os.path.exists(ckpt_path):
         print(f"[{name}] No checkpoint found. Run train_all.py first.")
         return
 
-    result_path = _RESULTS_DIR / f"{name}_mismatch.json"
+    # Suffix for result filenames:
+    #   domain: "" for conservative (default), "_full_analog" for full_analog
+    #   substrate: "" for classic (default), "_cld" / "_extropic_dtm" for others
+    # Non-diffusion models ignore analog_substrate but the suffix keeps filenames unique.
+    domain_suffix = "" if analog_domain == "conservative" else f"_{analog_domain}"
+    substrate_suffix = "" if analog_substrate == "classic" else f"_{analog_substrate}"
+    suffix = domain_suffix + substrate_suffix
+
+    result_path = _RESULTS_DIR / f"{name}_mismatch{suffix}.json"
     if result_path.exists() and not force:
-        print(f"[{name}] Results exist, skipping. (--force to re-run)")
+        print(f"[{name}] Results exist ({analog_domain}/{analog_substrate}), skipping. (--force to re-run)")
         return
 
     print(f"\n{'='*50}")
-    print(f"Sweeping {module.get_family_name()} ({name}), n_trials={n_trials}")
+    print(f"Sweeping {module.get_family_name()} ({name}), n_trials={n_trials}, domain={analog_domain}, substrate={analog_substrate}")
     print(f"{'='*50}")
 
     model = module.load_model(ckpt_path)
@@ -74,8 +86,8 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         data = module._get_data()
         # Handle different return formats
         if len(data) == 4:  # X_train, y_train, X_test, y_test
-            calib_data = data[0][:32]  # First 32 training samples
-        elif len(data) == 2 and isinstance(data[0], tuple):  # ((X_train, y_train), (X_test, y_test))
+            calib_data = data[0][:32]
+        elif len(data) == 2 and isinstance(data[0], tuple):
             calib_data = data[0][0][:32]
         else:  # (X_train, X_test) or similar
             calib_data = data[0][:32] if isinstance(data[0], torch.Tensor) else data[0][0][:32]
@@ -83,75 +95,83 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         calib_data = None
         print(f"  Warning: No _get_data() found, skipping V_ref calibration")
 
-    # Time-dependent models (Neural ODE, Diffusion, Flow) need (t, x) signature
-    # Skip calibration for them (V_ref=1.0 default is fine for normalized data)
+    # Time-dependent models need (t, x) call signature — skip calibration
     calib_data_to_use = None if name in ["neural_ode", "diffusion", "flow"] else calib_data
-    
+
     # 1. Mismatch sweep
-    print(f"\n[{name}] Mismatch sweep...")
+    print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
     t0 = time.time()
-    result = mismatch_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES, n_trials=n_trials, calibration_data=calib_data_to_use)
-    result.save(str(_RESULTS_DIR / f"{name}_mismatch.json"))
+    result = mismatch_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES, n_trials=n_trials,
+                            calibration_data=calib_data_to_use, analog_domain=analog_domain)
+    result.save(str(_RESULTS_DIR / f"{name}_mismatch{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s. Threshold@10%: {result.degradation_threshold():.3f}")
 
     # 2. Ablation sweep
-    print(f"\n[{name}] Ablation sweep (3 noise sources)...")
+    print(f"\n[{name}] Ablation sweep ({analog_domain})...")
     t0 = time.time()
-    ablation = ablation_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES, n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use)
+    ablation = ablation_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES,
+                              n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use,
+                              analog_domain=analog_domain)
     for noise_type, res in ablation.items():
-        res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}.json"))
+        res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s")
 
     # 3. ADC sweep
-    print(f"\n[{name}] ADC precision sweep...")
+    print(f"\n[{name}] ADC precision sweep ({analog_domain})...")
     t0 = time.time()
-    adc_result = adc_sweep(model, eval_fn, bit_values=_BIT_VALUES, sigma_mismatch=0.05, n_trials=max(20, n_trials//2), calibration_data=calib_data_to_use)
-    adc_result.save(str(_RESULTS_DIR / f"{name}_adc.json"))
+    adc_result = adc_sweep(model, eval_fn, bit_values=_BIT_VALUES, sigma_mismatch=0.05,
+                           n_trials=max(20, n_trials//2), calibration_data=calib_data_to_use,
+                           analog_domain=analog_domain)
+    adc_result.save(str(_RESULTS_DIR / f"{name}_adc{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s")
 
     # 4. Output MSE sweep (direct corruption measurement)
-    print(f"\n[{name}] Output MSE sweep...")
-    t0 = time.time()
-    import torch
-    import numpy as np
-    
-    # Load digital baseline
-    digital_model = module.load_model(ckpt_path)
-    
-    # MSE sweep: compare analog vs digital outputs at each sigma
-    per_trial_mse = np.zeros((len(_SIGMA_VALUES), n_trials), dtype=np.float64)
-    
-    for i, sigma in enumerate(_SIGMA_VALUES):
-        for j in range(n_trials):
-            analog_model = analogize(digital_model, sigma_mismatch=sigma, n_adc_bits=8)
-            if calib_data_to_use is not None:
-                from neuro_analog.simulator import calibrate_analog_model
-                calibrate_analog_model(analog_model, calib_data_to_use)
-            resample_all_mismatch(analog_model, sigma=sigma)
-            
-            # Call evaluate_output_mse
-            if name == "diffusion":
-                mse_val = module.evaluate_output_mse(analog_model, digital_model, analog_substrate=analog_substrate)
-            else:
-                mse_val = module.evaluate_output_mse(analog_model, digital_model)
-            per_trial_mse[i, j] = mse_val
-        
-        if i % 3 == 0:
-            print(f"  sigma={sigma:.3f}: MSE={per_trial_mse[i].mean():.6f} ± {per_trial_mse[i].std():.6f}")
-    
-    # Save MSE results
-    from neuro_analog.simulator import SweepResult
-    mse_result = SweepResult(
-        sigma_values=_SIGMA_VALUES,
-        metric_name="output_mse",
-        per_trial=per_trial_mse,
-        digital_baseline=0.0,  # MSE at sigma=0 is baseline
-    )
-    mse_result.save(str(_RESULTS_DIR / f"{name}_output_mse.json"))
-    print(f"  Done in {time.time()-t0:.0f}s")
-    
+    # Only run for conservative domain (MSE is domain-agnostic: it measures
+    # output divergence regardless of quantization profile)
+    if analog_domain == "conservative":
+        print(f"\n[{name}] Output MSE sweep...")
+        t0 = time.time()
+        import torch
+        import numpy as np
+
+        # Load digital baseline
+        digital_model = module.load_model(ckpt_path)
+
+        # MSE sweep: compare analog vs digital outputs at each sigma
+        per_trial_mse = np.zeros((len(_SIGMA_VALUES), n_trials), dtype=np.float64)
+
+        for i, sigma in enumerate(_SIGMA_VALUES):
+            for j in range(n_trials):
+                analog_model = analogize(digital_model, sigma_mismatch=sigma, n_adc_bits=8)
+                configure_analog_profile(analog_model, analog_domain)
+                if calib_data_to_use is not None:
+                    from neuro_analog.simulator import calibrate_analog_model
+                    calibrate_analog_model(analog_model, calib_data_to_use)
+                resample_all_mismatch(analog_model, sigma=sigma)
+
+                # Call evaluate_output_mse
+                if name == "diffusion":
+                    mse_val = module.evaluate_output_mse(analog_model, digital_model, analog_substrate=analog_substrate)
+                else:
+                    mse_val = module.evaluate_output_mse(analog_model, digital_model)
+                per_trial_mse[i, j] = mse_val
+
+            if i % 3 == 0:
+                print(f"  sigma={sigma:.3f}: MSE={per_trial_mse[i].mean():.6f} ± {per_trial_mse[i].std():.6f}")
+
+        # Save MSE results
+        from neuro_analog.simulator import SweepResult
+        mse_result = SweepResult(
+            sigma_values=_SIGMA_VALUES,
+            metric_name="output_mse",
+            per_trial=per_trial_mse,
+            digital_baseline=0.0,  # MSE at sigma=0 is baseline
+        )
+        mse_result.save(str(_RESULTS_DIR / f"{name}_output_mse.json"))
+        print(f"  Done in {time.time()-t0:.0f}s")
+
     # 5. DEQ-specific: convergence failure rate
-    if name == "deq" and hasattr(module, "evaluate_convergence_failure"):
+    if name == "deq" and analog_domain == "conservative" and hasattr(module, "evaluate_convergence_failure"):
         print(f"\n[DEQ] Convergence failure rate sweep...")
         failure_rates = []
         from models.deq import _get_data
@@ -160,6 +180,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
             rates = []
             for _ in range(max(10, n_trials // 5)):
                 analog_model = analogize(model, sigma_mismatch=sigma)
+                configure_analog_profile(analog_model, analog_domain)
                 # DEQ model retains convergence_failure_rate if it's a _DEQClassifier
                 # wrapped by analogize, it loses the method. Check inner model.
                 rate = module.evaluate_convergence_failure(analog_model)
@@ -181,14 +202,46 @@ def main():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--only", type=str, default=None)
     parser.add_argument("--n-trials", type=int, default=50)
-    parser.add_argument("--analog-substrate", type=str, default="classic", choices=["classic", "cld", "extropic_dtm"])
+    parser.add_argument(
+        "--analog-substrate", type=str, default="classic",
+        choices=["classic", "cld", "extropic_dtm", "all"],
+        help=(
+            "classic: DDIM deterministic reverse ODE (default). "
+            "cld: Critically-Damped Langevin (RLC circuit physics). "
+            "extropic_dtm: Denoising Thermodynamic Model (Extropic arXiv:2510.23972). "
+            "all: run all three substrates for diffusion; non-diffusion models run once (substrate-agnostic)."
+        ),
+    )
+    parser.add_argument(
+        "--analog-domain", type=str, default="conservative",
+        choices=["conservative", "full_analog", "both"],
+        help=(
+            "conservative: ADC at every layer (upper bound on quantization sensitivity). "
+            "full_analog: ADC only at final readout layer (lower bound). "
+            "both: run both profiles and save separate result files."
+        ),
+    )
     args = parser.parse_args()
 
+    domains = ["conservative", "full_analog"] if args.analog_domain == "both" else [args.analog_domain]
+    # "all" expands to all three substrates for diffusion; non-diffusion models are
+    # substrate-agnostic so they only run once (under "classic" to avoid tripling runtime).
+    all_substrates = ["classic", "cld", "extropic_dtm"]
+    substrates_for_diffusion = all_substrates if args.analog_substrate == "all" else [args.analog_substrate]
+    substrates_for_others = ["classic"] if args.analog_substrate == "all" else [args.analog_substrate]
+
     total_t0 = time.time()
-    for name, module in _MODELS:
-        if args.only and name != args.only:
-            continue
-        sweep_one(name, module, n_trials=args.n_trials, force=args.force, analog_substrate=args.analog_substrate)
+    for domain in domains:
+        print(f"\n{'#'*60}")
+        print(f"# Analog domain: {domain}")
+        print(f"{'#'*60}")
+        for name, module in _MODELS:
+            if args.only and name != args.only:
+                continue
+            substrates = substrates_for_diffusion if name == "diffusion" else substrates_for_others
+            for substrate in substrates:
+                sweep_one(name, module, n_trials=args.n_trials, force=args.force,
+                          analog_substrate=substrate, analog_domain=domain)
 
     print(f"\nAll sweeps done in {time.time()-total_t0:.0f}s")
     print(f"Results in: {_RESULTS_DIR}")

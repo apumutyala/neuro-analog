@@ -170,7 +170,13 @@ class _DigitalWithCrossing(nn.Module):
             y = torch.clamp(y, -self.v_ref, self.v_ref)
             y = torch.round(y * scale) / scale
 
-        # DAC output thermal noise (single-output, no sqrt(N) factor)
+        # DAC output thermal noise: bare kT/C (no sqrt(N) factor).
+        # This models a single DAC output stage, not a crossbar column summation.
+        # Contrast with AnalogLinear which uses sqrt(kT/C * in_features): that
+        # sqrt(N) factor comes from N independent column currents summing on one
+        # sense capacitor. Here there is only one signal source (the DAC output),
+        # so the noise is just kT/C. Both models are correct for their respective
+        # hardware components; the different formulas are intentional.
         if self._use_thermal:
             sigma_th = math.sqrt(_K_B * self.temperature_K / self.cap_F)
             y = y + torch.randn_like(y) * sigma_th

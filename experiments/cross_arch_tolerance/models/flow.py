@@ -108,34 +108,74 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
+_EVAL_SEED = 42  # Fixed seed for z0 sampling — eliminates baseline variance from z0
+
+
 def evaluate(model: nn.Module) -> float:
-    """Generate samples with 4 Euler steps, compute negative Wasserstein distance."""
+    """Generate samples with 4 Euler steps, compute negative sliced Wasserstein distance.
+
+    Uses sliced Wasserstein (average over 50 random 1D projections) instead of
+    marginal-only 1D Wasserstein. This captures 2D joint structure — models that
+    generate correct marginals but wrong correlation will now score worse.
+
+    Fixed z0 seed eliminates the z0-sampling variance that inflated baseline
+    variance in earlier runs (see §3.1 ‡ footnote in TECHNICAL_NOTE.md).
+    """
+    _, X_test = _get_data()
+    n_gen = 500
+    rng_z = np.random.default_rng(_EVAL_SEED)
+    z0 = torch.tensor(rng_z.standard_normal((n_gen, 2)), dtype=torch.float32)
+    t_span = torch.tensor([0.0, 1.0])
+
+    model.eval()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().numpy()
+    test_np = X_test.numpy()
+
+    if _HAS_SCIPY:
+        rng_p = np.random.default_rng(_EVAL_SEED)
+        directions = rng_p.standard_normal((50, 2))
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        distances = [_wd(x_gen @ d, test_np @ d) for d in directions]
+        return -float(np.mean(distances))
+    else:
+        # Fallback to marginal approximation if scipy unavailable
+        wd_x = np.abs(np.sort(x_gen[:, 0]) - np.sort(test_np[:n_gen, 0])).mean()
+        wd_y = np.abs(np.sort(x_gen[:, 1]) - np.sort(test_np[:n_gen, 1])).mean()
+        return -(wd_x + wd_y) / 2.0
+
+
+def evaluate_sliced_wasserstein(model: nn.Module, n_projections: int = 50, seed: int = 42) -> float:
+    """2D-aware generation quality via sliced Wasserstein distance.
+
+    Averages 1D Wasserstein distances over n_projections random unit vectors,
+    capturing joint 2D structure that marginal Wasserstein misses. This is the
+    recommended metric for future sweeps (see COHERENCE_FIXES.md fix [5]).
+
+    Returns negative sliced Wasserstein (higher = better).
+    """
+    if not _HAS_SCIPY:
+        return evaluate(model)  # fallback
+
     _, X_test = _get_data()
     n_gen = 500
     z0 = torch.randn(n_gen, 2)
     t_span = torch.tensor([0.0, 1.0])
 
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25)  # 4 steps: 0, 0.25, 0.5, 0.75, 1.0
-
-    gen_np = x_gen.detach().numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().numpy()
     test_np = X_test.numpy()
 
-    if _HAS_SCIPY:
-        wd_x = _wd(gen_np[:, 0], test_np[:, 0])
-        wd_y = _wd(gen_np[:, 1], test_np[:, 1])
-        mean_wd = (wd_x + wd_y) / 2.0
-    else:
-        # Fallback: sorted L1 distance approximation
-        gen_sorted_x = np.sort(gen_np[:n_gen, 0])
-        test_sorted_x = np.sort(test_np[:n_gen, 0])
-        wd_x = np.abs(gen_sorted_x - test_sorted_x).mean()
-        gen_sorted_y = np.sort(gen_np[:n_gen, 1])
-        test_sorted_y = np.sort(test_np[:n_gen, 1])
-        wd_y = np.abs(gen_sorted_y - test_sorted_y).mean()
-        mean_wd = (wd_x + wd_y) / 2.0
+    rng = np.random.default_rng(seed)
+    directions = rng.standard_normal((n_projections, 2))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
 
-    return -mean_wd  # higher = better
+    distances = []
+    for d in directions:
+        proj_gen = x_gen @ d
+        proj_test = test_np @ d
+        distances.append(_wd(proj_gen, proj_test))
+
+    return -float(np.mean(distances))
 
 
 def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:

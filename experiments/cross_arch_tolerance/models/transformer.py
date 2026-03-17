@@ -1,8 +1,8 @@
 """Transformer experiment model — 2-layer classifier on synthetic sequences.
 
-Architecture: 2 transformer layers, dim=64, 2 heads, FFN=128 with ReLU.
-Task: Classify whether a 10-token sequence contains a specific pattern.
-Metric: Classification accuracy [HIGHER = BETTER].
+Architecture: 2 transformer layers, dim=24, 2 heads, FFN=48 with ReLU.
+Task: Classify whether a 64-token sequence contains adjacent tokens [3, 5].
+Metric: Negative cross-entropy loss [HIGHER = BETTER].
 
 IMPORTANT: Built from scratch using nn.Linear directly (NOT nn.TransformerEncoder).
 analogize() replaces nn.Linear → AnalogLinear, nn.ReLU → AnalogReLU.
@@ -13,9 +13,14 @@ analog-native (AnalogReLU uses a diode-connected transistor model), making the
 analog fraction higher and the experiment more interesting. GELU would be DIGITAL,
 showing less degradation from the linear layers and more from the crossing penalty.
 
-Synthetic dataset: sequences of 10 tokens from vocab_size=16.
+Synthetic dataset: sequences of 64 tokens from vocab_size=32.
 Pattern: sequence contains tokens [3, 5] adjacent anywhere in the sequence.
 Label 1 if present, 0 otherwise. Balanced 50/50 by construction.
+
+seq_len=64, vocab=32: attention heads must scan the full 64-token context to
+detect the bigram — the task cannot be solved by local bigram lookup and actually
+requires the attention mechanism to work. This avoids the ceiling effect present
+in shorter sequences where even random embeddings could learn the pattern.
 """
 
 import os
@@ -29,8 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 # ── Dataset ───────────────────────────────────────────────────────────────
 
-_VOCAB = 16
-_SEQ_LEN = 10
+_VOCAB = 32
+_SEQ_LEN = 64
 _PATTERN = (3, 5)
 _N_TRAIN = 4000
 _N_TEST = 1000
@@ -128,7 +133,7 @@ class _TransformerClassifier(nn.Module):
 # ── Standard interface ─────────────────────────────────────────────────────
 
 def create_model() -> nn.Module:
-    return _TransformerClassifier(vocab=_VOCAB, dim=16, n_heads=2, n_layers=2, ffn_hidden=32)  # Reduced from 64/128 to operate near capacity
+    return _TransformerClassifier(vocab=_VOCAB, dim=24, n_heads=2, n_layers=2, ffn_hidden=48)  # dim=24 operates near capacity on 64-token task
 
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
@@ -136,7 +141,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
     criterion = nn.CrossEntropyLoss()
     batch_size = 128
-    n_epochs = 200
+    n_epochs = 300
 
     model.train()
     for epoch in range(n_epochs):

@@ -22,6 +22,7 @@ from .analog_model import (
     set_all_noise,
     calibrate_analog_model,
     count_analog_vs_digital,
+    configure_analog_profile,
 )
 from .sweep import SweepResult, mismatch_sweep, adc_sweep, ablation_sweep
 
@@ -31,6 +32,6 @@ __all__ = [
     "analog_odeint", "analog_odeint_with_logdet",
     "apply_ssm_mismatch", "analog_ssm_recurrence",
     "analogize", "resample_all_mismatch", "set_all_noise",
-    "calibrate_analog_model", "count_analog_vs_digital",
+    "calibrate_analog_model", "count_analog_vs_digital", "configure_analog_profile",
     "SweepResult", "mismatch_sweep", "adc_sweep", "ablation_sweep",
 ]

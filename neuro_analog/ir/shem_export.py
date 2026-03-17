@@ -53,7 +53,7 @@ def _header(model_name: str, arch: str, notes: list[str] | None = None) -> list[
         f"import jax",
         f"import jax.numpy as jnp",
         f"import diffrax",
-        f"# from shem import AnalogTrainable, mismatch, Shem",
+        f"from shem import AnalogTrainable, mismatch, Shem, BaseAnalogCkt",
         f"",
     ]
 
@@ -87,7 +87,7 @@ def _diffrax_solve_block(
     """Generate a Diffrax solve block — the same solver Shem uses internally."""
     ts_str = str(readout_times)
     return [
-        f"    def solve(self, y0: jnp.ndarray) -> jnp.ndarray:",
+        f"    def __call__(self, y0: jnp.ndarray) -> jnp.ndarray:",
         f'        """Integrate ODE using Diffrax (Shem\'s internal solver).',
         f"",
         f"        Solver: {solver} (Runge-Kutta 4/5 with error control).",
@@ -144,18 +144,10 @@ def export_ssm_to_shem(
                 break
 
     lines += [
-        f"import equinox as eqx",
         f"import jax.random as jrandom",
         f"",
-        f"class SSMAnalogCkt(eqx.Module):",
+        f"class SSMAnalogCkt(BaseAnalogCkt):",
         f'    """Continuous-time SSM complying with Shem BaseAnalogCkt."""',
-        f"",
-        f"    a_trainable: jnp.ndarray",
-        f"    A_shape: tuple",
-        f"    B_shape: tuple",
-        f"    C_shape: tuple",
-        f"    readout_times: jnp.ndarray",
-        f"    mismatch_sigma: float",
         f"",
         f"    def __init__(self):",
         f"        _A = jnp.array({[round(-1.0 / max(tc, 1e-9), 6) for tc in tc_sample]})",
@@ -179,6 +171,7 @@ def export_ssm_to_shem(
         f"        self.B_shape = _B.shape",
         f"        self.C_shape = _C.shape",
         f"        self.a_trainable = jnp.concatenate([_A.flatten(), _B.flatten(), _C.flatten()])",
+        f"        self.d_trainable = []  # no discrete/digital trainable params",
         f"",
         f"        self.mismatch_sigma = {mismatch_sigma}",
         f"        self.readout_times = jnp.linspace(0.0, 1.0, 32)",
@@ -216,7 +209,7 @@ def export_ssm_to_shem(
         f"        # Standard readout function to match Shem API",
         f"        return y",
         f"",
-        f"    def solve(self, y0: jnp.ndarray, seed: int = 42) -> jnp.ndarray:",
+        f"    def __call__(self, y0: jnp.ndarray, seed: int = 42) -> jnp.ndarray:",
         f"        args = self.make_args(switch=1.0, seed=seed, gumbel_temp=1.0, hard_gumbel=False)",
         f"        # MultiTerm combining ODE drift and Brownian diffusion",
         f"        term = diffrax.MultiTerm(",
@@ -237,7 +230,7 @@ def export_ssm_to_shem(
         f"if __name__ == '__main__':",
         f"    ckt = SSMAnalogCkt()",
         f"    y0 = jnp.zeros(({state_dim},))",
-        f"    ys = ckt.solve(y0)",
+        f"    ys = ckt(y0)",
         f"    print(f'Solved shape: {{ys.shape}}')",
     ]
 
@@ -282,7 +275,7 @@ def export_flow_to_shem(
     ])
 
     lines += [
-        f"class FlowODE:",
+        f"class FlowODE(BaseAnalogCkt):",
         f'    """Flow matching ODE for {graph.name}.',
         f"",
         f"    v_θ evaluation is mixed analog/digital (see AnalogGraph partition).",
@@ -309,6 +302,7 @@ def export_flow_to_shem(
         f"            AnalogTrainable(init=jnp.ones(1)),",
         f"            sigma={mismatch_sigma}  # Gain mismatch → step size error",
         f"        )",
+        f"        self.d_trainable = []  # no discrete/digital trainable params",
         f"",
         f"    def euler_step(",
         f"        self,",
@@ -394,7 +388,7 @@ def export_diffusion_to_shem(
     ])
 
     lines += [
-        f"class DiffusionDynamics:",
+        f"class DiffusionDynamics(BaseAnalogCkt):",
         f'    """VP-SDE and CLD dynamics for {graph.name}.',
         f"",
         f"    The score network s_θ(x,t) is 99.9% of compute per step.",
@@ -413,6 +407,7 @@ def export_diffusion_to_shem(
         f"        )",
         f"        # Readout at each denoising step boundary",
         f"        self.readout_times = jnp.array({readout_times[:min(8, len(readout_times))]})",
+        f"        self.d_trainable = []  # no discrete/digital trainable params",
         f"",
         f"    def _beta_t(self, t: float) -> jnp.ndarray:",
         f"        return self.beta_min + t * (self.beta_max - self.beta_min)",
@@ -514,7 +509,7 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
         "import diffrax",
         "from shem import AnalogTrainable, mismatch, Shem",
         "",
-        "class DEQAnalog:",
+        "class DEQAnalog(BaseAnalogCkt):",
         f'    """DEQ gradient-flow ODE: dz/dt = f_theta(z, x) - z',
         f"",
         f"    At equilibrium: z* = f_theta(z*, x).",
@@ -526,6 +521,7 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
         f"        self.t0 = 0.0",
         f"        self.t1 = 5.0   # Settle by t=5 (5 RC time constants)",
         f"        self.readout_time = 5.0",
+        f"        self.d_trainable = []  # no discrete/digital trainable params",
     ]
 
     # Emit weight matrices for each MVM layer
@@ -554,7 +550,7 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
         "        x = args",
         "        return self.f_theta(z, x) - z",
         "",
-        "    def solve(self, z0, x):",
+        "    def __call__(self, z0, x):",
         '        """Integrate to fixed point. readout at t=t1 (equilibrium)."""',
         "        term = diffrax.ODETerm(self.dynamics)",
         "        solver = diffrax.Tsit5()",

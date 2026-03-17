@@ -33,7 +33,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .analog_model import analogize, resample_all_mismatch, set_all_noise, calibrate_analog_model
+from .analog_model import analogize, resample_all_mismatch, set_all_noise, calibrate_analog_model, configure_analog_profile
 
 _DEFAULT_SIGMA_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
 _DEFAULT_BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
@@ -136,6 +136,7 @@ def mismatch_sweep(
     n_trials: int = 50,
     n_adc_bits: int = 8,
     calibration_data: torch.Tensor | None = None,
+    analog_domain: str = "conservative",
     **analog_kwargs,
 ) -> SweepResult:
     """Monte Carlo mismatch sweep.
@@ -154,7 +155,8 @@ def mismatch_sweep(
 
     # Create analog model once, resample between trials
     analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=n_adc_bits, **analog_kwargs)
-    
+    configure_analog_profile(analog_model, analog_domain)
+
     # Calibrate V_ref if data provided
     if calibration_data is not None:
         calibrate_analog_model(analog_model, calibration_data)
@@ -191,6 +193,7 @@ def adc_sweep(
     sigma_mismatch: float = 0.05,
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
+    analog_domain: str = "conservative",
     **analog_kwargs,
 ) -> SweepResult:
     """Sweep ADC precision at fixed mismatch level.
@@ -209,6 +212,7 @@ def adc_sweep(
 
     # Digital baseline: max bits, sigma=0, no noise
     analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=max(bit_values), **analog_kwargs)
+    configure_analog_profile(analog_model, analog_domain)
     if calibration_data is not None:
         calibrate_analog_model(analog_model, calibration_data)
     set_all_noise(analog_model, thermal=False, quantization=False, mismatch=False)
@@ -219,6 +223,7 @@ def adc_sweep(
         analog_model = analogize(
             model, sigma_mismatch=sigma_mismatch, n_adc_bits=bits, **analog_kwargs
         )
+        configure_analog_profile(analog_model, analog_domain)
         if calibration_data is not None:
             calibrate_analog_model(analog_model, calibration_data)
         for j in range(n_trials):
@@ -241,6 +246,7 @@ def ablation_sweep(
     sigma_values: list[float] | None = None,
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
+    analog_domain: str = "conservative",
     **analog_kwargs,
 ) -> dict[str, SweepResult]:
     """Run three sweeps isolating each noise source independently.
@@ -266,6 +272,7 @@ def ablation_sweep(
         per_trial = np.zeros((len(sigma_values), n_trials), dtype=np.float64)
 
         analog_model = analogize(model, sigma_mismatch=0.0, **analog_kwargs)
+        configure_analog_profile(analog_model, analog_domain)
         if calibration_data is not None:
             calibrate_analog_model(analog_model, calibration_data)
         set_all_noise(analog_model, thermal=False, quantization=False, mismatch=False)

@@ -85,6 +85,11 @@ class AnalogLinear(nn.Module):
         self._use_thermal = True
         self._use_quantization = True
 
+        # Profile toggle: True = this layer is a readout (ADC boundary).
+        # In 'conservative' profile all layers are readouts (default).
+        # In 'full_analog' profile only the final output layer is a readout.
+        self._is_readout = True
+
         # Weights stored as buffers — not trained, never accumulate gradients
         self.register_buffer("W_nominal", weight.clone().detach().float())
         if bias is not None:
@@ -149,7 +154,9 @@ class AnalogLinear(nn.Module):
             y = y + torch.randn_like(y) * sigma_th
 
         # Step 3 — ADC quantization over [-V_ref, V_ref]
-        if self._use_quantization and self.n_adc_bits < 32:
+        # Gated by _is_readout: in 'full_analog' profile, intermediate layers
+        # skip quantization (signal stays in continuous analog domain).
+        if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
             n_levels = 2 ** self.n_adc_bits - 1
             scale = n_levels / (2.0 * self.v_ref)
             y = torch.clamp(y, -self.v_ref, self.v_ref)
