@@ -89,7 +89,7 @@ def analog_odeint(
         t = ts[i]
         step = ts[i + 1] - t  # signed step
 
-        t_tensor = torch.tensor(t, dtype=torch.float32)
+        t_tensor = torch.tensor(t, dtype=torch.float32, device=y.device)
         if batch_mode:
             t_tensor = t_tensor.expand(y.shape[0])
 
@@ -155,7 +155,7 @@ def analog_odeint_with_logdet(
         t = ts[i]
         step = ts[i + 1] - t
 
-        t_tensor = torch.full((batch_size,), t, dtype=torch.float32)
+        t_tensor = torch.full((batch_size,), t, dtype=torch.float32, device=y.device)
         y_req = y.requires_grad_(True)
 
         # Compute f(t, y) and tr(∂f/∂y)
@@ -163,7 +163,7 @@ def analog_odeint_with_logdet(
 
         # Exact trace of Jacobian via per-output gradients
         # tr(J) = sum_i ∂f_i/∂y_i
-        trace = torch.zeros(batch_size, dtype=torch.float32)
+        trace = torch.zeros(batch_size, dtype=torch.float32, device=y.device)
         for dim_i in range(state_dim):
             grad = torch.autograd.grad(
                 dy[..., dim_i].sum(), y_req,
