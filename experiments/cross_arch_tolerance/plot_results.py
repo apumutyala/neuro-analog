@@ -109,8 +109,16 @@ def plot_figure1():
     handles = []
     threshold_annotations = []
 
+    # Diffusion and Flow use ablation_mismatch: their mismatch.json baselines are
+    # unreliable (Diffusion: conservative ADC floor contaminates σ=0 baseline;
+    # Flow: z0 sampling seed inflates σ=0 to 1.38). ablation_mismatch uses an
+    # internally consistent baseline and correctly reflects mismatch sensitivity.
+    _mismatch_source = {name: "mismatch" for name in _ORDER}
+    _mismatch_source["diffusion"] = "ablation_mismatch"
+    _mismatch_source["flow"] = "ablation_mismatch"
+
     for name in _ORDER:
-        d = _load(name, "mismatch")
+        d = _load(name, _mismatch_source[name])
         if d is None:
             continue
 
@@ -124,13 +132,17 @@ def plot_figure1():
         ax.plot(sigma, mean, color=color, linewidth=2.2, label=label, zorder=3)
         ax.fill_between(sigma, mean - std, mean + std, color=color, alpha=0.12, zorder=2)
 
-        # Mark threshold crossing
+        # Mark threshold crossing: annotate the FIRST FAILURE sigma (quality < 0.9),
+        # which is one step beyond the stored "last safe" degradation_threshold_10pct.
         if threshold and threshold > 0:
-            # Find the quality at threshold
-            threshold_idx = np.searchsorted(sigma, threshold)
-            if threshold_idx < len(mean):
-                ax.axvline(threshold, color=color, linewidth=0.6, linestyle=":", alpha=0.5)
-                threshold_annotations.append((threshold, 0.305, color, f"{threshold:.2f}"))
+            last_safe_idx = np.searchsorted(sigma, threshold)
+            first_fail_idx = last_safe_idx + 1
+            if first_fail_idx < len(sigma):
+                first_fail_sigma = sigma[first_fail_idx]
+            else:
+                first_fail_sigma = threshold  # already at last point
+            ax.axvline(first_fail_sigma, color=color, linewidth=0.6, linestyle=":", alpha=0.5)
+            threshold_annotations.append((first_fail_sigma, 0.305, color, f"{first_fail_sigma:.2f}"))
 
         handles.append(Line2D([0], [0], color=color, linewidth=2.2, label=f"{label}"))
 
@@ -139,7 +151,7 @@ def plot_figure1():
         ax.text(x, y, txt, color=c, fontsize=7.5, ha="center", rotation=90)
 
     ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.9,
-              title="Architecture (most → least tolerant)", title_fontsize=9)
+              title="Architecture", title_fontsize=9)
     ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
     ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
 
@@ -175,7 +187,7 @@ def plot_figure2():
             if baseline == 0:
                 baseline = 1.0
             mean_at_sigma = np.array(d["mean"])[sigma_idx]
-            norm_q = mean_at_sigma / abs(baseline) if baseline != 0 else 0.5
+            norm_q = 1.0 + (mean_at_sigma - baseline) / abs(baseline) if baseline != 0 else 0.5
             ax.bar(i, norm_q, color=colors_bar[i], alpha=0.8, width=0.6)
             ax.text(i, norm_q + 0.01, f"{norm_q:.2f}", ha="center", fontsize=7.5)
 
@@ -246,7 +258,7 @@ def plot_figure4():
     ax1.set_xlabel("Conductance Mismatch  σ")
     ax1.set_ylabel("Classification Accuracy (normalized)", color="#e67e22")
     ax2.set_ylabel("Convergence Failure Rate", color="#c0392b")
-    ax1.set_title("DEQ Convergence Bifurcation Under Mismatch\nSpectral radius ρ(∂f/∂z) > 1 → iteration diverges", pad=10)
+    ax1.set_title("DEQ Convergence Bifurcation Under Mismatch\nFailure rate = 100% at all σ — metric artifact, not true divergence (see §3.4)", pad=10)
 
     l1 = ax1.plot(sigma, acc, color="#e67e22", linewidth=2.2, label="Accuracy", zorder=3)
     ax1.fill_between(sigma, acc - acc_std, acc + acc_std, color="#e67e22", alpha=0.15)
@@ -274,7 +286,7 @@ def plot_figure4():
 
     ax1.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
     ax1.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
-    lines = ax1.get_lines() + ax2.get_lines()
+    lines = [l for l in ax1.get_lines() + ax2.get_lines() if not l.get_label().startswith("_")]
     labels = [l.get_label() for l in lines]
     ax1.legend(lines, labels, loc="upper right", fontsize=9)
 
@@ -431,6 +443,8 @@ def plot_figure6():
         if d is None:
             continue
 
+        if "mean" not in d:
+            continue
         sigma = np.array(d["sigma_values"])
         mean = -np.array(d["mean"])  # Negate back to positive MSE
         std = np.array(d["std"])
@@ -447,6 +461,12 @@ def plot_figure6():
     ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
     ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
     ax.grid(True, which="both", alpha=0.2, linestyle="--")
+    ax.text(0.99, 0.02,
+            "Diffusion not shown: MSE ≈ 0.69 (off-chart)\n"
+            "ADC quantization floor dominates, flat at all σ",
+            transform=ax.transAxes, fontsize=7.5, color="#95a5a6",
+            ha="right", va="bottom",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#bdc3c7", alpha=0.8))
 
     fig.tight_layout()
     _save_fig(fig, "fig6_output_mse")
