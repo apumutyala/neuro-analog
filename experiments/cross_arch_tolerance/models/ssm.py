@@ -48,6 +48,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 from neuro_analog.simulator.analog_ssm_solver import analog_ssm_recurrence
 
 _K_B = 1.380649e-23   # Boltzmann constant [J/K]
@@ -222,6 +224,8 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     (X_train, y_train), _ = _get_data()
+    X_train, y_train = X_train.to(_DEVICE), y_train.to(_DEVICE)
+    model = model.to(_DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
     criterion = nn.CrossEntropyLoss()
     batch_size = 128
@@ -229,7 +233,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
     model.train()
     for epoch in range(n_epochs):
-        idx = torch.randperm(len(X_train))[:batch_size]
+        idx = torch.randperm(len(X_train), device=_DEVICE)[:batch_size]
         logits = model(X_train[idx])
         loss = criterion(logits, y_train[idx])
         optimizer.zero_grad()
@@ -246,7 +250,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -257,6 +262,8 @@ def evaluate(model: nn.Module) -> float:
     Degrades smoothly with analog noise because logit magnitudes matter.
     """
     _, (X_test, y_test) = _get_data()
+    X_test, y_test = X_test.to(_DEVICE), y_test.to(_DEVICE)
+    model = model.to(_DEVICE)
     model.eval()
     with torch.no_grad():
         logits = model(X_test)
@@ -269,14 +276,17 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
     
     Returns negative MSE so higher = better (consistent with other metrics).
     """
-    _, (X_test, y_test) = _get_data()
+    _, (X_test, _) = _get_data()
+    X_test = X_test.to(_DEVICE)
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     model.eval()
     digital_baseline.eval()
-    
+
     with torch.no_grad():
         dig_out = digital_baseline(X_test)
         analog_out = model(X_test)
-    
+
     mse = ((dig_out - analog_out) ** 2).mean().item()
     return -mse
 

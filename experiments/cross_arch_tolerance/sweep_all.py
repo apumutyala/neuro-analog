@@ -40,8 +40,12 @@ _CKPT_DIR = Path(__file__).parent / "checkpoints"
 _RESULTS_DIR = Path(__file__).parent / "results"
 _RESULTS_DIR.mkdir(exist_ok=True)
 
+import torch
+
 from models import neural_ode, transformer, diffusion, flow, ebm, deq, ssm
 from neuro_analog.simulator import mismatch_sweep, adc_sweep, ablation_sweep, resample_all_mismatch, set_all_noise, analogize, configure_analog_profile
+
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 _MODELS = [
     ("neural_ode",  neural_ode),
@@ -100,7 +104,6 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         eval_fn = module.evaluate
 
     # Get calibration data (small batch of inputs)
-    import torch
     if hasattr(module, '_get_data'):
         data = module._get_data()
         # Handle different return formats
@@ -116,6 +119,8 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
 
     # Time-dependent models need (t, x) call signature — skip calibration
     calib_data_to_use = None if name in ["neural_ode", "diffusion", "flow"] else calib_data
+    if calib_data_to_use is not None:
+        calib_data_to_use = calib_data_to_use.to(_DEVICE)
 
     # 1. Mismatch sweep
     print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
@@ -150,7 +155,6 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     if analog_domain == "conservative":
         print(f"\n[{name}] Output MSE sweep...")
         t0 = time.time()
-        import torch
         import numpy as np
 
         # Load digital baseline

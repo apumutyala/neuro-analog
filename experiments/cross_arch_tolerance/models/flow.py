@@ -27,6 +27,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from neuro_analog.simulator import analog_odeint
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # RC integrator noise (same physical model as neural_ode.py)
 _K_B = 1.380649e-23
 _TEMP_K = 300.0
@@ -85,15 +87,17 @@ def create_model() -> nn.Module:
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
+    X_train = X_train.to(_DEVICE)
+    model = model.to(_DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     batch_size = 256
     n_epochs = 400
     model.train()
 
     for epoch in range(n_epochs):
-        x1 = X_train[torch.randperm(len(X_train))[:batch_size]]
+        x1 = X_train[torch.randperm(len(X_train), device=_DEVICE)[:batch_size]]
         x0 = torch.randn_like(x1)
-        t = torch.rand(batch_size)
+        t = torch.rand(batch_size, device=_DEVICE)
         x_t = (1 - t.unsqueeze(-1)) * x0 + t.unsqueeze(-1) * x1
         target = x1 - x0
         pred = model(t, x_t)
@@ -111,7 +115,8 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
 def load_model(save_path: str) -> nn.Module:
     model = create_model()
-    model.load_state_dict(torch.load(save_path, map_location="cpu"))
+    model.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
+    model = model.to(_DEVICE)
     return model
 
 
@@ -137,13 +142,14 @@ def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
     _, X_test = _get_data()
     n_gen = 500
     rng_z = np.random.default_rng(_EVAL_SEED)
-    z0 = torch.tensor(rng_z.standard_normal((n_gen, 2)), dtype=torch.float32)
+    z0 = torch.tensor(rng_z.standard_normal((n_gen, 2)), dtype=torch.float32, device=_DEVICE)
     t_span = torch.tensor([0.0, 1.0])
     noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
 
+    model = model.to(_DEVICE)
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma).detach().numpy()
-    test_np = X_test.numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma).detach().cpu().numpy()
+    test_np = X_test.cpu().numpy()
 
     if _HAS_SCIPY:
         rng_p = np.random.default_rng(_EVAL_SEED)
@@ -172,12 +178,13 @@ def evaluate_sliced_wasserstein(model: nn.Module, n_projections: int = 50, seed:
 
     _, X_test = _get_data()
     n_gen = 500
-    z0 = torch.randn(n_gen, 2)
+    z0 = torch.randn(n_gen, 2, device=_DEVICE)
     t_span = torch.tensor([0.0, 1.0])
 
+    model = model.to(_DEVICE)
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().numpy()
-    test_np = X_test.numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().cpu().numpy()
+    test_np = X_test.cpu().numpy()
 
     rng = np.random.default_rng(seed)
     directions = rng.standard_normal((n_projections, 2))
@@ -198,13 +205,14 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
     Returns negative MSE so higher = better (consistent with other metrics).
     """
     n_gen = 100
-    z0 = torch.randn(n_gen, 2)
+    z0 = torch.randn(n_gen, 2, device=_DEVICE)
     t_span = torch.tensor([0.0, 1.0])
-    
+
+    model = model.to(_DEVICE)
+    digital_baseline = digital_baseline.to(_DEVICE)
     model.eval()
     digital_baseline.eval()
-    
-    from neuro_analog.simulator import analog_odeint
+
     noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
     dig_samples = analog_odeint(digital_baseline, z0, t_span, dt=0.25, noise_sigma=0.0)
     analog_samples = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma)
