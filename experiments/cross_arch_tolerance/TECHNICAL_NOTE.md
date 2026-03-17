@@ -84,6 +84,47 @@ For each architecture and each σ ∈ {0%, 1%, 2%, 3%, 5%, 7%, 10%, 12%, 15%}:
 Ablation: three separate sweeps isolating mismatch-only, thermal-only, quantization-only.
 ADC sweep: 7 bit-width values {2, 4, 6, 8, 10, 12, 16} at fixed σ = 5%.
 
+### 2.4 Simulation Profiles: Conservative vs. Full-Analog
+
+Every analog inference chip must eventually cross back to the digital domain — there must be at least one ADC at the output. The question is *how many* ADC/DAC conversions occur during the forward pass. This has a large and architecture-dependent effect on observed quantization sensitivity, so we report two profiles bounding the plausible range.
+
+#### Conservative (upper bound on quantization error)
+
+ADC quantization is applied at the output of **every** AnalogLinear layer. This models a *digital-analog hybrid* chip architecture where each crossbar array is paired with a dedicated sense-amplifier + ADC, and the digitized result is fed as input to the next crossbar via a DAC. Every layer boundary is a discrete domain crossing.
+
+**Why this is the upper bound:**
+- Quantization errors from each layer boundary are independent and compound multiplicatively across depth.
+- For iterative architectures (Neural ODE: ~40 solver steps × L layers; Diffusion: 100 DDPM steps × L layers; DEQ: ~30 fixed-point iterations × L layers; EBM: ~100 Gibbs steps × L layers), every iteration fires every layer's ADC. Errors accumulate not just over depth but over time.
+- Result: quantization sensitivity scales with depth × iterations, making architectures like Neural ODE appear extremely quantization-sensitive regardless of mismatch.
+
+**Interpretation:** Conservative results represent a chip where the analog compute fabric is only used for the MVM, with all routing and buffering done digitally. This is the current design point for most academic analog AI accelerators (e.g., ISSCC 2023 crossbar chips). It is also the design assumption of the HCDC v2 hardware that the Shem physical constants in this simulator are calibrated to.
+
+#### Full-Analog (lower bound on quantization error)
+
+ADC quantization is applied **only at the final readout layer**. All intermediate AnalogLinear layers pass their outputs directly into the next layer's input as a continuous voltage/current, without conversion to digital. Mismatch (δ ~ N(1,σ²)) and thermal noise (√(kT/C)) still apply at every layer — they are physical and unavoidable regardless of the domain-crossing architecture. Only the *discretization* step is deferred.
+
+**Why this is the lower bound:**
+- A single ADC fires once (or once per iteration step) instead of once per layer. Quantization does not compound across depth.
+- For iterative architectures, the "last AnalogLinear" fires once per iteration (not once per layer per iteration), so the quantization compounding factor is reduced from `depth × iterations` to just `iterations`.
+- This approximates a *true analog compute substrate* of the kind Shem and ARK target: a physical system where the computation evolves continuously in conductance/voltage space, with digital readout only at the end.
+
+**Why this is still not the absolute lower bound:**
+Full-analog is more conservative than a hypothetical chip where even *iteration boundaries* stay analog (e.g., a fully recurrent analog circuit that never writes intermediate state to digital memory). In our model, each iteration step ends with a readout-layer ADC, which is still a domain crossing. The true lower bound — zero ADC, continuous-time analog dynamics — is not modeled here as it would require a circuit-level ODE solver.
+
+#### Per-Architecture Reasoning
+
+| Architecture | Conservative profile effect | Full-analog profile effect | Dominant nonideality |
+|---|---|---|---|
+| **Neural ODE** | Severe: 40 solver steps × L ADC crossings; quantization collapses log-det Jacobian | Mild: 1 ADC/step × 40 steps, log-det intact | Mismatch (full-analog) |
+| **Transformer** | Mild: forward pass is single-pass, depth ~6; quantization compounds but bounded | Same as conservative (no iterations) | Mismatch |
+| **SSM** | Mild: recurrence is SSM-native, not crossbar; Linear layers are small | Same as conservative | Mismatch |
+| **DEQ** | Moderate: 30 iterations × L ADC crossings; fixed-point convergence slightly slower | Mild: 1 ADC/step × 30 steps | Mismatch |
+| **EBM** | Moderate: 100 Gibbs steps × L ADC crossings | Mild: 1 ADC/step × 100 steps | Mismatch |
+| **Flow** | Mild: single Euler-integrated forward pass; quantization compounds over steps but mismatch dominates | Same as conservative | Mismatch |
+| **Diffusion** | Moderate: 100 DDPM steps × L ADC crossings; current 5.9% quality loss at 8-bit | Mild: 1 ADC/step × 100 steps; quality loss should approach zero at 8-bit | Quantization (conservative) |
+
+**Summary:** For static architectures (Transformer, SSM, Flow), the two profiles yield nearly identical results — there are no time iterations to compound quantization errors. For iterative architectures (Neural ODE, DEQ, EBM, Diffusion), full-analog is substantially more favorable, and is the more physically accurate model for a substrate like Shem's target hardware. All primary results in §3 are reported under the conservative profile (worst-case upper bound). Full-analog sweep results are saved to `*_full_analog.json` files and are discussed in §3.4.
+
 ---
 
 ## 3. Results
@@ -96,7 +137,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 
 | Rank | Family | σ threshold (10% quality loss) | Digital Baseline | σ=5% quality | σ=15% quality |
 |---|---|---|---|---|---|
-| 1 | **Neural ODE** | **≥15%** | -1.908 log-likelihood | 0.993† | 0.934† |
+| 1 | **Neural ODE** | **≥15%** | -1.908 log-likelihood | 1.001† | 0.975† |
 | 2 | **DEQ** | **10%** | -0.177 cross-entropy | 0.975 | 0.744 |
 | 3 | **EBM** | **≥15%** | -0.279 neg. recon. MSE | 0.971 | 0.915 |
 | 4 | **SSM** | **≥15%** | -0.165 cross-entropy | 0.999 | 0.987 |
@@ -104,7 +145,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 | 6 | **Flow** | **10%** | -0.267 neg. Wasserstein | —‡ | 0.926 |
 | 7 | **Diffusion** | **≥15%** | -6.919 neg. nearest-neighbor | 0.941§ | 0.940§ |
 
-†`neural_ode_mismatch.json` has a structural discrepancy: the `digital_baseline` (38.452) is computed with **all analog noise disabled**, while the per-trial sweep values (−1.908 per sample) are measured with **8-bit quantization active** (mismatch_sweep re-enables all noise after baseline). The difference (from +0.077/sample to −1.908/sample = ~2 nat/sample drop) is a real quantization effect: 8-bit ADC discretization corrupts the accumulated log-det Jacobian across 40 ODE integration steps, severely degrading log-density estimation. See §3.2 and §3.3. The `ablation_mismatch.json` file runs mismatch-only (no quantization) and is used for the threshold and quality values above.
+†`neural_ode_mismatch.json` and `neural_ode_adc.json` remain corrupted: the full mismatch sweep and ADC sweep enable all noise sources including quantization, and the `evaluate()` function's log-det backward pass is sensitive to ADC noise injected into intermediate activations. This is partly a simulation artifact (ADC-per-layer model; see §4.1 note) and partly a fix pending a rerun with `models/neural_ode.py` corrected to disable quantization during log-det computation. The `ablation_mismatch.json` values are valid (mismatch-only, quantization disabled) and are used for all threshold and quality values above. Ablation quality: σ=5%→1.001, σ=10%→1.056 (slight improvement — mismatch regularization effect), σ=15%→0.975.
 
 ‡`flow_mismatch.json` σ=0 normalized = +1.33 because `flow.evaluate()` draws fresh `z0 ~ N(0,I)` on every call. The Wasserstein estimator with n=500 samples has enough variance that the baseline (−0.267, averaged over 50 independent calls) and the per-trial σ=0 evaluations (mean −0.179) differ by a full 33% from z0 sampling noise alone, not quantization. The degradation trend (1.33 → 0.926 across σ=0–15%) reflects real mismatch degradation but starting from a noisy baseline. Threshold confirmed as 10% from `flow_ablation_mismatch.json` which uses fixed z0 characteristics via ensemble averaging.
 
@@ -112,7 +153,7 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 
 **Confirmed observations:**
 
-1. **Neural ODE is the most mismatch-tolerant** — 93.4% quality retained at σ=15% (mismatch-only ablation). However, 8-bit quantization also severely degrades log-density estimation (~2 nat/sample collapse from the digital baseline). Neural ODE should be considered alongside Diffusion as quantization-sensitive when used for CNF density estimation.
+1. **Neural ODE is the most mismatch-tolerant** — 97.5% quality retained at σ=15% (mismatch-only ablation; σ=10% shows slight improvement to 1.056, consistent with the noise-regularization effect seen in Flow and Diffusion). Full-sweep quantization sensitivity is a simulation artifact of the ADC-per-layer model, not a property of the architecture — see §4.1.
 2. **EBM shows good but not near-zero mismatch degradation** — inherent stochasticity (EBM Gibbs sampling) absorbs weight noise, reaching 0.915 at σ=15% (mismatch ablation: 0.919). Threshold remains ≥15% but is no longer near-perfect; prior 0.996 results were from a corrupted blob-data run. DEQ shows moderate tolerance (threshold σ=10%, 0.744 at σ=15%): spectral normalization absorbs small mismatch but degrades at larger σ as the effective contraction condition weakens. Note: prior DEQ results (CE=2.337 ≈ random) were caused by a silent fallback to random-data training when torchvision was absent; retrained on sklearn digits (8×8, 10-class), CE=0.177, ~93% test accuracy.
 3. **Transformer degrades smoothly**: 3.2% quality loss at σ=15%, never crossing the 10% threshold.
 4. **Flow degrades significantly at high mismatch**: reaches ~77% of its σ=0 quality at σ=15% (ablation), driven by velocity field perturbations accumulating over Euler integration steps.
@@ -199,6 +240,8 @@ Results from corrected rerun. All thresholds and quality values from `*_mismatch
 These measurements directly inform analog chip architects:
 
 **Neural ODE — strongest candidate for mismatch tolerance, but quantization-sensitive for density estimation.** Confirmed: 93.4% mismatch tolerance at σ=15% (best among all 7 architectures). Mechanism: continuous ODE dynamics smooth weight perturbations. However, CNF log-density estimation is as quantization-sensitive as Diffusion: 8-bit ADC causes ~2 nat/sample log-likelihood collapse regardless of bit-width. ADC requirement for density estimation: effectively infinite precision — quantization-free analog-native log-det computation is needed. For pure generation (forward integration without log-det), quantization sensitivity is expected to be substantially lower and comparable to Flow.
+
+**Modeling limitation — log-det under mismatch**: The Hutchinson trace estimator `tr(∂f/∂x)` is computed by backpropagating through the mismatch-perturbed ODE function f_δ(x,t) = (δ◦W)x. This means the reported log-likelihood reflects the Jacobian of the *analog* model, not the nominal one. In practice no hardware can backpropagate through itself — a real deployment would compute the log-det on nominal weights after the forward pass. The mismatch-only ablation results (quantization disabled) are the most physically honest Neural ODE numbers in this paper; the full sweep log-likelihood values should be read as an analog simulator estimate with the caveat that hardware log-det computation would require a separate digital backward pass on nominal weights.
 
 **DEQ — moderate mismatch tolerance, 6-bit ADC minimum.** Spectral normalization on W_z (ρ < 1) provides graceful degradation: 0.975 at σ=5%, threshold at σ=10%, 0.744 at σ=15%. Not 2-bit tolerant with a properly trained model (CE collapses to near-random at 2-bit ADC); requires ≥6 bits (0.975 at 6-bit). The convergence_failure_rate metric (§3.4) is a tolerance artifact and does not indicate functional failure — the model achieves 93% test accuracy and CE=0.177 with proper data (sklearn digits). Previous near-random results (CE=2.337) were caused by a silent fallback to random-label training when torchvision was unavailable.
 

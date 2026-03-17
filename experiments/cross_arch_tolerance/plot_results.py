@@ -69,8 +69,17 @@ _STYLE = {
 plt.rcParams.update(_STYLE)
 
 
-def _load(name: str, suffix: str) -> dict | None:
-    p = _RESULTS_DIR / f"{name}_{suffix}.json"
+_DOMAIN = "conservative"      # Set by main() via --domain flag
+_SUBSTRATE = "classic"        # Set by main() via --substrate flag
+
+
+def _load(name: str, suffix: str, domain: str | None = None, substrate: str | None = None) -> dict | None:
+    """Load a result JSON for the given domain and substrate (defaults to module-level globals)."""
+    d = domain if domain is not None else _DOMAIN
+    s = substrate if substrate is not None else _SUBSTRATE
+    domain_suffix = "" if d == "conservative" else f"_{d}"
+    substrate_suffix = "" if s == "classic" else f"_{s}"
+    p = _RESULTS_DIR / f"{name}_{suffix}{domain_suffix}{substrate_suffix}.json"
     if not p.exists():
         return None
     with open(p) as f:
@@ -444,12 +453,101 @@ def plot_figure6():
     plt.close(fig)
 
 
+# ── Figure 7: Conservative vs Full-Analog Profile Comparison ─────────────
+
+def plot_figure7():
+    """Side-by-side: conservative (ADC per layer) vs full_analog (ADC at readout only).
+
+    Only plotted if *_full_analog.json results exist. Shows the two profiles
+    on the same axes using solid (conservative) vs dashed (full_analog) lines.
+    """
+    # Check if any full_analog results exist
+    has_full = any(
+        (_RESULTS_DIR / f"{name}_mismatch_full_analog.json").exists()
+        for name in _ORDER
+    )
+    if not has_full:
+        print("  [Fig 7] No full_analog results found. Run sweep_all.py --analog-domain full_analog first.")
+        return
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5), sharey=False)
+
+    for ax, sweep_suffix, title_suffix in [
+        (ax1, "mismatch", "Mismatch Tolerance"),
+        (ax2, "adc", "ADC Precision (σ=0.05)"),
+    ]:
+        ax.set_title(
+            f"Conservative vs. Full-Analog\n{title_suffix}",
+            pad=10
+        )
+        if sweep_suffix == "mismatch":
+            ax.set_xlabel("Conductance Mismatch  σ")
+            ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
+            ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
+        else:
+            ax.set_xlabel("ADC Bit Width")
+            ax.set_xticks([2, 4, 6, 8, 10, 12, 16])
+        ax.set_ylabel("Normalized Quality  (digital = 1.0)")
+        ax.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
+        ax.set_ylim(0.3, 1.15)
+
+        for name in _ORDER:
+            d_cons = _load(name, sweep_suffix, domain="conservative")
+            d_full = _load(name, sweep_suffix, domain="full_analog")
+            if d_cons is None and d_full is None:
+                continue
+            color = _COLORS[name]
+            label = _LABELS[name]
+            x_axis = "sigma_values"
+
+            if d_cons is not None:
+                x = np.array(d_cons[x_axis])
+                m = np.array(d_cons["normalized_mean"])
+                ax.plot(x, m, color=color, linewidth=2.0, linestyle="-",
+                        label=f"{label} (conservative)")
+
+            if d_full is not None:
+                x = np.array(d_full[x_axis])
+                m = np.array(d_full["normalized_mean"])
+                ax.plot(x, m, color=color, linewidth=2.0, linestyle="--",
+                        label=f"{label} (full-analog)")
+
+    # Shared legend — one entry per architecture (solid=conservative, dashed=full_analog)
+    from matplotlib.lines import Line2D
+    arch_handles = [Line2D([0], [0], color=_COLORS[n], linewidth=2.0, label=_LABELS[n])
+                    for n in _ORDER]
+    style_handles = [
+        Line2D([0], [0], color="black", linewidth=1.5, linestyle="-",  label="Conservative (per-layer ADC)"),
+        Line2D([0], [0], color="black", linewidth=1.5, linestyle="--", label="Full-analog (readout ADC only)"),
+    ]
+    fig.legend(handles=arch_handles + style_handles,
+               loc="lower center", ncol=5, fontsize=8,
+               bbox_to_anchor=(0.5, -0.08), framealpha=0.9)
+    fig.tight_layout()
+    _save_fig(fig, "fig7_profile_comparison")
+    plt.close(fig)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fig", type=int, default=None, help="Plot only figure N (1-6)")
+    parser.add_argument("--fig", type=int, default=None, help="Plot only figure N (1-7)")
+    parser.add_argument(
+        "--domain", type=str, default="conservative",
+        choices=["conservative", "full_analog"],
+        help="Which result domain to use for figures 1-6 (figure 7 always shows both).",
+    )
+    parser.add_argument(
+        "--substrate", type=str, default="classic",
+        choices=["classic", "cld", "extropic_dtm"],
+        help="Which diffusion sampling substrate results to load (classic/cld/extropic_dtm).",
+    )
     args = parser.parse_args()
+
+    global _DOMAIN, _SUBSTRATE
+    _DOMAIN = args.domain
+    _SUBSTRATE = args.substrate
 
     figs = {
         1: ("Figure 1: Cross-Architecture Mismatch Tolerance", plot_figure1),
@@ -458,6 +556,7 @@ def main():
         4: ("Figure 4: DEQ Convergence Bifurcation", plot_figure4),
         5: ("Figure 5: Visual Results", plot_figure5),
         6: ("Figure 6: Output MSE vs Mismatch", plot_figure6),
+        7: ("Figure 7: Conservative vs Full-Analog Comparison", plot_figure7),
     }
 
     for num, (title, fn) in figs.items():

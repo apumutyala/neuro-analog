@@ -169,10 +169,18 @@ def resample_all_mismatch(model: nn.Module, sigma: float | None = None) -> None:
 
     Call between Monte Carlo trials to get independent mismatch realizations.
     If sigma is provided, updates σ_mismatch for all layers simultaneously.
+
+    After resampling all layers, calls sync_mismatch_pairs() on any module
+    that defines it — used by architectures with physically tied crossbars
+    (e.g. RBM W_fwd / W_bwd, which are the same RRAM array read bidirectionally).
     """
     for module in model.modules():
         if hasattr(module, "resample_mismatch"):
             module.resample_mismatch(sigma)
+    # Allow models with tied crossbars to enforce consistent δ after resampling
+    for module in model.modules():
+        if hasattr(module, "sync_mismatch_pairs"):
+            module.sync_mismatch_pairs()
 
 
 def set_all_noise(
@@ -233,6 +241,63 @@ def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None
 
     # Re-enable all noise
     set_all_noise(model, thermal=True, quantization=True, mismatch=True)
+
+
+def configure_analog_profile(model: nn.Module, profile: str) -> None:
+    """Set the ADC quantization profile for an analogized model.
+
+    Two profiles representing physical upper and lower bounds on quantization
+    sensitivity:
+
+    'conservative' (default / upper bound)
+        ADC is applied at the output of every AnalogLinear layer. Models a
+        digital-analog hybrid chip where each crossbar unit is paired with a
+        dedicated ADC and DAC. Every layer boundary is a domain crossing.
+        Quantization errors compound across all layers and across all
+        iterations for iterative architectures (Diffusion DDPM steps, DEQ
+        fixed-point, Neural ODE integration steps). This is the worst-case
+        assumption and sets the ceiling on observed quantization sensitivity.
+
+    'full_analog' (lower bound)
+        ADC is applied only at the final AnalogLinear layer of the model —
+        the readout. All intermediate layers keep their signal in the
+        continuous analog domain: mismatch and thermal noise still apply
+        (they are physical and unavoidable), but no discretization occurs
+        until the computation is complete. Models a true analog compute
+        substrate of the kind targeted by Shem and ARK, where the signal
+        lives in conductance/voltage space throughout the forward pass and
+        is only read out digitally at the end.
+
+        For iterative architectures the "last AnalogLinear" fires once per
+        iteration (100× for Diffusion, 40× for Neural ODE, 30× for DEQ,
+        100× for EBM Gibbs), so this is still more conservative than a
+        fully-analog-memory chip where even iteration boundaries stay
+        analog. It is nonetheless a substantial improvement over conservative
+        for any multi-layer architecture.
+
+    Args:
+        model: An analogized nn.Module (output of analogize()).
+        profile: 'conservative' or 'full_analog'.
+    """
+    from .analog_conv import AnalogConv1d, AnalogConv2d, AnalogConv3d
+    readout_types = (AnalogLinear, AnalogConv1d, AnalogConv2d, AnalogConv3d)
+
+    readout_layers = [(n, m) for n, m in model.named_modules()
+                      if isinstance(m, readout_types)]
+
+    if profile == "conservative":
+        for _, m in readout_layers:
+            m._is_readout = True
+
+    elif profile == "full_analog":
+        for _, m in readout_layers:
+            m._is_readout = False
+        # Mark only the last layer as the readout (final domain crossing)
+        if readout_layers:
+            readout_layers[-1][1]._is_readout = True
+
+    else:
+        raise ValueError(f"Unknown profile {profile!r}. Use 'conservative' or 'full_analog'.")
 
 
 def count_analog_vs_digital(model: nn.Module) -> dict:
