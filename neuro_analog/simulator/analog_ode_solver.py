@@ -149,7 +149,7 @@ def analog_odeint_with_logdet(
 
     batch_size = y.shape[0]
     state_dim = y.shape[1]
-    delta_logp = torch.zeros(batch_size, dtype=torch.float32)
+    delta_logp = torch.zeros(batch_size, dtype=torch.float32, device=y.device)
 
     for i in range(len(ts) - 1):
         t = ts[i]
