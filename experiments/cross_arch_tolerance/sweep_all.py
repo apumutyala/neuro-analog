@@ -10,13 +10,19 @@ For each family:
 
 Results saved as JSON to results/ directory.
 
+Substrate-aware architectures and their supported substrates:
+  diffusion:  classic (DDIM) | cld (RLC/Langevin) | extropic_dtm (Extropic arXiv:2510.23972)
+  neural_ode: euler (noiseless) | rc_integrator (Johnson-Nyquist capacitor noise)
+  flow:       euler (noiseless) | rc_integrator (Johnson-Nyquist capacitor noise)
+  deq:        discrete (fixed-point iter) | hopfield (damped continuous-time relaxation)
+
 Usage:
     python experiments/cross_arch_tolerance/sweep_all.py
     python experiments/cross_arch_tolerance/sweep_all.py --only neural_ode
     python experiments/cross_arch_tolerance/sweep_all.py --n-trials 20  # faster
     python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate cld
     python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate extropic_dtm
-    python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate all  # all 3 substrates
+    python experiments/cross_arch_tolerance/sweep_all.py --analog-substrate all  # all substrates for all arches
     python experiments/cross_arch_tolerance/sweep_all.py --analog-domain both  # conservative + full_analog
 """
 
@@ -50,6 +56,19 @@ _MODELS = [
 _SIGMA_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
 _BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
 
+# Architectures whose evaluate() accepts an analog_substrate kwarg.
+_SUBSTRATE_AWARE = {"diffusion", "neural_ode", "flow", "deq"}
+
+# All supported substrates per architecture (first = default, adds no filename suffix).
+_ALL_SUBSTRATES_BY_NAME = {
+    "diffusion":  ["classic", "cld", "extropic_dtm"],
+    "neural_ode": ["euler", "rc_integrator"],
+    "flow":       ["euler", "rc_integrator"],
+    "deq":        ["discrete", "hopfield"],
+}
+# Default substrate per architecture (used for filename suffix logic).
+_DEFAULT_SUBSTRATE = {name: subs[0] for name, subs in _ALL_SUBSTRATES_BY_NAME.items()}
+
 
 def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog_substrate: str = "classic", analog_domain: str = "conservative") -> None:
     ckpt_path = str(_CKPT_DIR / f"{name}.pt")
@@ -59,10 +78,10 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
 
     # Suffix for result filenames:
     #   domain: "" for conservative (default), "_full_analog" for full_analog
-    #   substrate: "" for classic (default), "_cld" / "_extropic_dtm" for others
-    # Non-diffusion models ignore analog_substrate but the suffix keeps filenames unique.
+    #   substrate: "" for the default substrate of this architecture, else "_{substrate}"
     domain_suffix = "" if analog_domain == "conservative" else f"_{analog_domain}"
-    substrate_suffix = "" if analog_substrate == "classic" else f"_{analog_substrate}"
+    default_sub = _DEFAULT_SUBSTRATE.get(name, "classic")
+    substrate_suffix = "" if analog_substrate == default_sub else f"_{analog_substrate}"
     suffix = domain_suffix + substrate_suffix
 
     result_path = _RESULTS_DIR / f"{name}_mismatch{suffix}.json"
@@ -75,8 +94,8 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     print(f"{'='*50}")
 
     model = module.load_model(ckpt_path)
-    if name == "diffusion":
-        eval_fn = lambda m: module.evaluate(m, analog_substrate=analog_substrate)
+    if name in _SUBSTRATE_AWARE:
+        eval_fn = lambda m, _s=analog_substrate: module.evaluate(m, analog_substrate=_s)
     else:
         eval_fn = module.evaluate
 
@@ -150,7 +169,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
                 resample_all_mismatch(analog_model, sigma=sigma)
 
                 # Call evaluate_output_mse
-                if name == "diffusion":
+                if name in _SUBSTRATE_AWARE:
                     mse_val = module.evaluate_output_mse(analog_model, digital_model, analog_substrate=analog_substrate)
                 else:
                     mse_val = module.evaluate_output_mse(analog_model, digital_model)
@@ -204,12 +223,13 @@ def main():
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument(
         "--analog-substrate", type=str, default="classic",
-        choices=["classic", "cld", "extropic_dtm", "all"],
+        choices=["classic", "euler", "discrete", "cld", "extropic_dtm", "rc_integrator", "hopfield", "all"],
         help=(
-            "classic: DDIM deterministic reverse ODE (default). "
-            "cld: Critically-Damped Langevin (RLC circuit physics). "
-            "extropic_dtm: Denoising Thermodynamic Model (Extropic arXiv:2510.23972). "
-            "all: run all three substrates for diffusion; non-diffusion models run once (substrate-agnostic)."
+            "Analog integration substrate. 'all' expands per-architecture to all supported substrates. "
+            "diffusion: classic|cld|extropic_dtm. "
+            "neural_ode/flow: euler|rc_integrator. "
+            "deq: discrete|hopfield. "
+            "transformer/ebm/ssm: substrate-agnostic (always run once under their default)."
         ),
     )
     parser.add_argument(
@@ -224,11 +244,13 @@ def main():
     args = parser.parse_args()
 
     domains = ["conservative", "full_analog"] if args.analog_domain == "both" else [args.analog_domain]
-    # "all" expands to all three substrates for diffusion; non-diffusion models are
-    # substrate-agnostic so they only run once (under "classic" to avoid tripling runtime).
-    all_substrates = ["classic", "cld", "extropic_dtm"]
-    substrates_for_diffusion = all_substrates if args.analog_substrate == "all" else [args.analog_substrate]
-    substrates_for_others = ["classic"] if args.analog_substrate == "all" else [args.analog_substrate]
+
+    # "all" expands per-architecture to all supported substrates.
+    # Substrate-agnostic architectures (transformer, ebm, ssm) always run once under their default.
+    def get_substrates(arch_name: str) -> list[str]:
+        if args.analog_substrate == "all":
+            return _ALL_SUBSTRATES_BY_NAME.get(arch_name, [_DEFAULT_SUBSTRATE.get(arch_name, "classic")])
+        return [args.analog_substrate]
 
     total_t0 = time.time()
     for domain in domains:
@@ -238,7 +260,7 @@ def main():
         for name, module in _MODELS:
             if args.only and name != args.only:
                 continue
-            substrates = substrates_for_diffusion if name == "diffusion" else substrates_for_others
+            substrates = get_substrates(name)
             for substrate in substrates:
                 sweep_one(name, module, n_trials=args.n_trials, force=args.force,
                           analog_substrate=substrate, analog_domain=domain)

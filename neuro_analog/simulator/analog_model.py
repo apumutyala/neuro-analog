@@ -12,17 +12,16 @@ analogize() recursively replaces PyTorch modules with their analog equivalents:
 Everything else (LayerNorm, Softmax, Dropout, BatchNorm, Embedding, etc.)
 stays digital — there is no efficient analog implementation.
 
-DOUBT NOTED: The directive says "Returns a new model (does not modify the original)."
-We use copy.deepcopy() to ensure the original is untouched. This means the analog
-model is completely independent — changes to mismatch in the analog copy do not
-affect the digital original.
+analogize() returns a new model and does not modify the original.
+copy.deepcopy() ensures the two are completely independent — changes to mismatch
+in the analog copy do not affect the digital original.
 
-DOUBT NOTED: The v_ref calibration problem. When replacing nn.Linear with AnalogLinear,
+The v_ref calibration problem. When replacing nn.Linear with AnalogLinear,
 we don't know what activation range the layer will see until we run a forward pass.
 We initialize v_ref=1.0 (matches HCDCv2 hardware spec: ±1V voltage range). For more
 accurate simulation, call calibrate_analog_model(model, sample_input) after analogize().
 
-DOUBT NOTED: nn.Linear can appear in attention mechanisms as Q/K/V/O projections.
+nn.Linear can appear in attention mechanisms as Q/K/V/O projections.
 These should be analogized (they ARE crossbar operations). Our recursive traversal
 will catch all of them since we replace at the nn.Linear level regardless of context.
 """
@@ -212,7 +211,7 @@ def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None
     capturing activation ranges at each AnalogLinear layer via hooks.
     Updates v_ref = 1.1 * max(|activation|) for each layer.
 
-    DOUBT NOTED: This requires a hook-based activation capture, which doesn't
+    This requires a hook-based activation capture, which doesn't
     work cleanly when layers are inside sequential or custom modules. For the
     experiment, we use v_ref=1.0 (HCDCv2 hardware spec) as the default, which
     is correct for weight-normalized models with typical activation scales.

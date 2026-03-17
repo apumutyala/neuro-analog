@@ -1,6 +1,6 @@
 """Tests for the analog simulator layer.
 
-Per the directive's 10 required tests plus additional coverage.
+Core tests plus additional coverage for edge cases.
 Critical invariant: at sigma=0, all noise off → exact match with F.linear.
 """
 
