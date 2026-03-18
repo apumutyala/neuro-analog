@@ -2,7 +2,7 @@
 
 Analog hardware — crossbar arrays, RC integrators, differential-pair activations — can run neural network inference at orders-of-magnitude lower energy than digital, but it introduces unavoidable physical nonidealities: fabrication mismatch bakes static weight errors into every device, thermal noise corrupts every readout, and ADC quantization discretizes every layer boundary. Which neural architectures actually survive these conditions, and at what noise level does each one break?
 
-This framework answers that empirically. It instruments any PyTorch model with physics-grounded analog nonidealities, measures how task-level quality degrades as noise increases, and extracts the model into a typed IR classifying each operation as analog-native, digital-required, or hybrid — feeding directly into the [Shem](https://arxiv.org/abs/2411.03557) (Achour & Wang, 2024) / [Ark](https://arxiv.org/abs/2309.08774) compilation pipeline.
+This framework answers that empirically. It instruments any PyTorch model with physics-grounded analog nonidealities, measures how task-level quality degrades as noise increases, and extracts the model into a typed IR classifying each operation as analog-native, digital-required, or hybrid — providing the front‑end analysis and exports needed by analog‑aware solvers and compilers such as [Shem](https://arxiv.org/abs/2411.03557) (Achour & Wang, 2024) and [Ark](https://arxiv.org/abs/2309.08774).
 
 ---
 
@@ -34,11 +34,11 @@ See [`examples/01_quickstart.py`](examples/01_quickstart.py) for a full walkthro
 
 ---
 
-## Experiment: cross-architecture analog tolerance
+## Experiment: Analog Tolerance across Neural Architecture Families
 
 Seven neural network families trained on small-scale tasks, then swept over conductance mismatch σ ∈ {0–15%} with 50 Monte Carlo trials per point. Three noise sources ablated independently. ADC bit-width swept separately. Two simulation profiles: conservative (ADC at every layer boundary) and full-analog (ADC at final readout only).
 
-The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are — before committing to a chip design or running Shem optimization.
+The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are before committing to a chip design or running analog‑aware adjoint optimization frameworks built on JAX/Diffrax or higher‑level systems such as Shem.
 
 **Disclaimer:** These are simulation results on demo-scale models (1K–103K parameters) trained near capacity on synthetic and small benchmark tasks. They represent a worst-case bound for each architecture family — production-scale overparameterized models will degrade more gracefully. This is not hardware validation. Several physical effects are not simulated (see Nonidealities section). Results should be interpreted as characterizing the analog sensitivity of the architecture's computational structure, not a specific chip.
 
@@ -56,11 +56,9 @@ The goal is to establish empirical baselines for which architectures are worth c
 
 †Diffusion is mismatch-immune but quantization-limited under the conservative profile (per-layer ADC × 100 DDPM steps creates a constant ~15% quality floor regardless of bit-width). Resolves completely under the full-analog profile.
 
-**Key finding:** The simulation profile (conservative vs. full-analog) can reverse the architecture ranking, not just shift numbers. EBM degrades in full-analog — per-step ADC binarization was inadvertently helping by reinforcing the binary nature of Gibbs sampling. DEQ improves in full-analog — per-iteration ADC was causing fixed-point limit cycles. Thermal noise is negligible across all 7 at C=1pF / demo-scale layer widths.
+**Key finding (conservative):** Mismatch is the dominant noise source across 6/7 architectures. Flow and DEQ are the most sensitive, breaking down at σ=10% and σ=12% respectively. Five architectures remain robust to ≥15% mismatch within the 10% quality loss bound.
 
----
-
-## Figures
+### Figures (conservative profile)
 
 <table>
 <tr>
@@ -74,6 +72,32 @@ The goal is to establish empirical baselines for which architectures are worth c
 <tr>
 <td><img src="experiments/cross_arch_tolerance/figures/fig5_visual_results.png" width="340"/><br><sub>Fig 5 — Generated sample quality vs σ</sub></td>
 <td><img src="experiments/cross_arch_tolerance/figures/fig6_output_mse.png" width="340"/><br><sub>Fig 6 — Output MSE vs σ</sub></td>
+</tr>
+</table>
+
+---
+
+### Results (50 trials, full-analog profile)
+
+Full-analog defers ADC to the final readout only, removing per-layer quantization boundaries. For architectures compiled to crossbar arrays where a single output digitization step is feasible, this is the more realistic operating point.
+
+| Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits |
+|---|---|---|---|
+| SSM | ≥ 15% | mismatch | 2 |
+| Transformer | ≥ 15% | mismatch | 2 |
+| Neural ODE | ≥ 15% | mismatch | 2 |
+| Flow | ≥ 15% | mismatch | 2 |
+| Diffusion | ≥ 15% | mismatch | 2 |
+| DEQ | 15% | mismatch | **4** |
+| EBM | 10% | mismatch | **4** |
+
+**Key finding (full-analog):** The simulation profile can reverse the architecture ranking, not just shift numbers. Five architectures are unaffected by the switch. EBM drops from ≥15% to a 10% threshold — per-step ADC binarization was inadvertently reinforcing the binary nature of Gibbs sampling; removing it exposes accumulated mismatch across 100 Gibbs steps. DEQ improves from 12% to a 15% threshold and drops its minimum ADC requirement from 6 to 4 bits — per-iteration ADC was creating fixed-point limit cycles that disappear when quantization is deferred to readout. Diffusion resolves completely: the constant ~15% quality floor from per-layer ADC × 100 DDPM steps disappears and 2-bit readout ADC is sufficient. Thermal noise remains negligible across all 7 at C=1pF / demo-scale layer widths.
+
+### Figures (full-analog profile)
+
+<table>
+<tr>
+<td><img src="experiments/cross_arch_tolerance/figures/fig7_profile_comparison.png" width="700"/><br><sub>Fig 7 — Conservative vs. full-analog profile comparison across all 7 architectures</sub></td>
 </tr>
 </table>
 
