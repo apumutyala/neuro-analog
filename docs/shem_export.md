@@ -89,8 +89,8 @@ Why Neural ODE maps cleanly:
 | Architecture | Export status | Notes |
 |---|---|---|
 | **Neural ODE** | ✓ Working | `export_neural_ode_to_shem()` in `extractors/neural_ode.py` |
-| **SSM** | In progress | S4D recurrence maps to `dx/dt = Ax + Bu` — very close to CDG format. Discretization step needs JAX equivalent. |
-| **DEQ** | Partial | Fixed-point `z* = f(z*,x)` → continuous relaxation `dz/dt = f(z,x) - z` is valid Ark ODE format. Template in `ir/shem_export.py`. |
+| **SSM** | ✓ Working | `export_ssm_to_shem()` in `ir/shem_export.py`. `dx/dt = A*x + B*u` (diagonal, element-wise). Proper `BaseAnalogCkt` subclass. |
+| **DEQ** | ✓ Working | `export_deq_to_shem()` in `ir/shem_export.py`. State-augmented `y=[z,x]`, `dz/dt = f_theta(z,x)-z`, `dx/dt=0`. Proper `BaseAnalogCkt` subclass. |
 | **Flow** | Partial | `dx/dt = v_θ(x,t)` maps directly. Gap: v_θ is a 12B-param network in production (FLUX.1), not a compact CDG. Demo-scale flow model works. |
 | **Transformer** | Not applicable | Not an ODE system — softmax, LayerNorm, dynamic attention matmuls have no CDG analog. Crossbar MVM share (~82%) is exportable but the architecture isn't a dynamics compiler target. |
 | **Diffusion** | Not applicable | Score network ∇log p(x_t) is a U-Net/MLP, not a compact ODE. CLD substrate (Langevin SDE) is conceptually analog-native but export infrastructure not built. |
