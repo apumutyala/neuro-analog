@@ -43,3 +43,6 @@ Thumbs.db
 # Data / checkpoints (large files, reproduce via scripts)
 experiments/*/data/
 .claude/
+
+# Research PDFs (do not commit)
+*.pdf

@@ -53,7 +53,8 @@ def _header(model_name: str, arch: str, notes: list[str] | None = None) -> list[
         f"import jax",
         f"import jax.numpy as jnp",
         f"import diffrax",
-        f"from shem import AnalogTrainable, mismatch, Shem, BaseAnalogCkt",
+        f"from ark.optimization.base_module import BaseAnalogCkt",
+        f"from shem import AnalogTrainable, mismatch, Shem",
         f"",
     ]
 
@@ -507,6 +508,7 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
         "",
         "import jax.numpy as jnp",
         "import diffrax",
+        "from ark.optimization.base_module import BaseAnalogCkt",
         "from shem import AnalogTrainable, mismatch, Shem",
         "",
         "class DEQAnalog(BaseAnalogCkt):",
