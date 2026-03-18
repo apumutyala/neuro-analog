@@ -118,124 +118,107 @@ def export_ssm_to_shem(
     output_path: Path | str,
     mismatch_sigma: float = 0.05,
 ) -> str:
-    """Export SSM (Mamba) dynamics to Shem-compatible JAX code.
-    Complies with BaseAnalogCkt interface for direct optimization.
+    """Export SSM dynamics as a proper BaseAnalogCkt subclass.
+
+    Dynamics: dx/dt = A * x + B * u  (A diagonal, u=0 autonomous simplification).
+    Compatible with Ark's OptCompiler output format and BaseAnalogCkt.__call__.
     """
     dynamics = graph._dynamics
-    
-    notes = [
-        "dx/dt = A·x + B·u, A diagonal (N independent RC integrators)",
-        "Compliant with Shem BaseAnalogCkt interface (flattened parameters)",
-    ]
-    lines = _header(graph.name, "SSM (Mamba)", notes=notes)
-
-    tc_sample = dynamics.time_constants[:16] if dynamics.time_constants else [1e-3] * 16
     state_dim = dynamics.state_dimension or 16
+    tc_sample = dynamics.time_constants[:state_dim] if dynamics.time_constants else [1e-3] * state_dim
+    A_vals = [round(-1.0 / max(tc, 1e-9), 6) for tc in tc_sample]
 
     B_weights, C_weights = None, None
     if extractor and hasattr(extractor, 'model') and extractor.model is not None:
-        import torch
         for name, param in extractor.model.named_parameters():
             if 'x_proj' in name and 'weight' in name:
                 x_proj = param.detach().float().cpu().numpy()
-                out_dim = x_proj.shape[0]
-                mid = out_dim // 2
+                mid = x_proj.shape[0] // 2
                 B_weights = x_proj[:mid, :state_dim]
                 C_weights = x_proj[mid:, :state_dim]
                 break
 
-    lines += [
+    # Static offsets (A, B, C all length state_dim — diagonal vectors)
+    A_off, B_off, C_off = 0, state_dim, 2 * state_dim
+
+    if B_weights is not None:
+        import numpy as _np
+        B_diag = _np.diag(B_weights[:state_dim, :state_dim]).tolist() if B_weights.shape[0] >= state_dim else [1.0] * state_dim
+        C_diag = _np.diag(C_weights[:state_dim, :state_dim]).tolist() if C_weights.shape[0] >= state_dim else [1.0] * state_dim
+        B_init = f"jnp.array({[round(float(v), 6) for v in B_diag]})"
+        C_init = f"jnp.array({[round(float(v), 6) for v in C_diag]})"
+    else:
+        B_init = f"jnp.ones({state_dim})"
+        C_init = f"jnp.ones({state_dim})"
+
+    lines = [
+        f'"""',
+        f"Ark-compatible JAX ODE specification for {graph.name} (SSM).",
+        f"Proper BaseAnalogCkt subclass -- compatible with Ark OptCompiler output format.",
+        f"",
+        f"Dynamics: dx/dt = A * x + B * u  (diagonal A, u=0 autonomous simplification)",
+        f"For sequence processing: augment initial_state with u(t).",
+        f"",
+        f"Usage:",
+        f"    time_info = TimeInfo(t0=0.0, t1=1.0, dt0=0.01, saveat=jnp.array([1.0]))",
+        f"    result = ckt(time_info, h0, switch=jnp.array([]), args_seed=42, noise_seed=43)",
+        f'"""',
+        f"",
+        f"import jax",
+        f"import jax.numpy as jnp",
         f"import jax.random as jrandom",
+        f"import diffrax",
+        f"from ark.optimization.base_module import BaseAnalogCkt, TimeInfo",
         f"",
         f"class SSMAnalogCkt(BaseAnalogCkt):",
-        f'    """Continuous-time SSM complying with Shem BaseAnalogCkt."""',
+        f'    """Continuous-time SSM (BaseAnalogCkt subclass).',
+        f"",
+        f"    State: x (hidden state, dim={state_dim})",
+        f"    Dynamics: dx/dt = A * x + B * u  (diagonal A -- element-wise multiply)",
+        f'    """',
         f"",
         f"    def __init__(self):",
-        f"        _A = jnp.array({[round(-1.0 / max(tc, 1e-9), 6) for tc in tc_sample]})",
-    ]
-
-    if B_weights is not None and C_weights is not None:
-        B_list = B_weights[:, :min(4, state_dim)].flatten().tolist()
-        C_list = C_weights[:, :min(4, state_dim)].flatten().tolist()
-        lines += [
-            f"        _B = jnp.array({[round(float(b), 6) for b in B_list]})",
-            f"        _C = jnp.array({[round(float(c), 6) for c in C_list]})",
-        ]
-    else:
-        lines += [
-            f"        _B = jnp.ones({state_dim})",
-            f"        _C = jnp.ones({state_dim})",
-        ]
-
-    lines += [
-        f"        self.A_shape = _A.shape",
-        f"        self.B_shape = _B.shape",
-        f"        self.C_shape = _C.shape",
-        f"        self.a_trainable = jnp.concatenate([_A.flatten(), _B.flatten(), _C.flatten()])",
-        f"        self.d_trainable = []  # no discrete/digital trainable params",
+        f"        _A = jnp.array({A_vals})",
+        f"        _B = {B_init}",
+        f"        _C = {C_init}",
+        f"        a_trainable = jnp.concatenate([_A, _B, _C])",
+        f"        super().__init__(",
+        f"            init_trainable=a_trainable,",
+        f"            is_stochastic=False,",
+        f"            solver=diffrax.Heun(),",
+        f"        )",
         f"",
-        f"        self.mismatch_sigma = {mismatch_sigma}",
-        f"        self.readout_times = jnp.linspace(0.0, 1.0, 32)",
-        f"",
-        f"    def make_args(self, switch, seed, gumbel_temp, hard_gumbel):",
-        f'        """Apply analog mismatch using JAX PRNG keys."""',
-        f"        key = jrandom.PRNGKey(seed)",
+        f"    def make_args(self, switch, mismatch_seed, gumbel_temp, hard_gumbel):",
+        f"        key = jrandom.PRNGKey(mismatch_seed)",
         f"        k1, k2, k3 = jrandom.split(key, 3)",
-        f"",
-        f"        idx_A = jnp.prod(jnp.array(self.A_shape))",
-        f"        idx_B = idx_A + jnp.prod(jnp.array(self.B_shape))",
-        f"",
-        f"        A_flat = self.a_trainable[:idx_A]",
-        f"        B_flat = self.a_trainable[idx_A:idx_B]",
-        f"        C_flat = self.a_trainable[idx_B:]",
-        f"",
-        f"        # Multiplicative mismatch: theta * (1 + sigma * N(0,1))",
-        f"        A_mismatch = A_flat * (1.0 + self.mismatch_sigma * jrandom.normal(k1, A_flat.shape))",
-        f"        B_mismatch = B_flat * (1.0 + self.mismatch_sigma * jrandom.normal(k2, B_flat.shape))",
-        f"        C_mismatch = C_flat * (1.0 + self.mismatch_sigma * jrandom.normal(k3, C_flat.shape))",
-        f"",
-        f"        return (A_mismatch.reshape(self.A_shape), B_mismatch.reshape(self.B_shape), C_mismatch.reshape(self.C_shape))",
+        f"        sigma = {mismatch_sigma}",
+        f"        _A = self.a_trainable[{A_off}:{A_off+state_dim}] * (1.0 + sigma * jrandom.normal(k1, ({state_dim},)))",
+        f"        _B = self.a_trainable[{B_off}:{B_off+state_dim}] * (1.0 + sigma * jrandom.normal(k2, ({state_dim},)))",
+        f"        _C = self.a_trainable[{C_off}:{C_off+state_dim}] * (1.0 + sigma * jrandom.normal(k3, ({state_dim},)))",
+        f"        return (_A, _B, _C)",
         f"",
         f"    def ode_fn(self, t, x, args):",
         f"        A, B, C = args",
-        f"        # autonomous evolution (u=0 for simplicity, or inject current)",
-        f"        u = jnp.zeros_like(x)",
-        f"        return A * x + B * u",
+        f"        u = jnp.zeros_like(x)  # autonomous; replace with input for seq processing",
+        f"        return A * x + B * u   # diagonal A: element-wise multiply",
         f"",
         f"    def noise_fn(self, t, x, args):",
-        f"        # Shem SDE transient noise injection (diagonal Brownian)",
-        f"        return jnp.ones_like(x) * 0.01  # small thermal noise amplitude",
+        f"        return jnp.ones_like(x) * 0.01",
         f"",
         f"    def readout(self, y):",
-        f"        # Standard readout function to match Shem API",
-        f"        return y",
-        f"",
-        f"    def __call__(self, y0: jnp.ndarray, seed: int = 42) -> jnp.ndarray:",
-        f"        args = self.make_args(switch=1.0, seed=seed, gumbel_temp=1.0, hard_gumbel=False)",
-        f"        # MultiTerm combining ODE drift and Brownian diffusion",
-        f"        term = diffrax.MultiTerm(",
-        f"            diffrax.ODETerm(self.ode_fn),",
-        f"            diffrax.WeaklyDiagonalControlTerm(",
-        f"                self.noise_fn,",
-        f"                diffrax.VirtualBrownianTree(t0=0.0, t1=1.0, tol=1e-3, shape=y0.shape, key=jrandom.PRNGKey(seed+1))",
-        f"            )",
-        f"        )",
-        f"        solver = diffrax.Euler() # Euler-Maruyama for SDE",
-        f"        saveat = diffrax.SaveAt(ts=self.readout_times)",
-        f"        sol = diffrax.diffeqsolve(",
-        f"            term, solver, t0=0.0, t1=1.0, dt0=0.01,",
-        f"            y0=y0, saveat=saveat, args=args",
-        f"        )",
-        f"        return self.readout(sol.ys)",
+        f"        return y[-1]  # final time point, shape ({state_dim},)",
         f"",
         f"if __name__ == '__main__':",
         f"    ckt = SSMAnalogCkt()",
-        f"    y0 = jnp.zeros(({state_dim},))",
-        f"    ys = ckt(y0)",
-        f"    print(f'Solved shape: {{ys.shape}}')",
+        f"    time_info = TimeInfo(t0=0.0, t1=1.0, dt0=0.01, saveat=jnp.array([1.0]))",
+        f"    h0 = jnp.zeros(({state_dim},))",
+        f"    switch = jnp.array([])",
+        f"    result = ckt(time_info, h0, switch, args_seed=42, noise_seed=43)",
+        f"    print(f'Result shape: {{result.shape}}')",
+        f"",
     ]
 
-    code = "\\n".join(lines) + "\\n"
+    code = "\n".join(lines) + "\n"
     Path(output_path).write_text(code, encoding='utf-8')
     return code
 
@@ -488,81 +471,138 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
     At equilibrium dz/dt = 0, so z* = f_theta(z*, x).
 
     This is native Arco/Legno format. Shem can optimize theta for mismatch-robust
-    convergence — pushing the spectral radius rho(df/dz) further below 1.
+    convergence - pushing the spectral radius rho(df/dz) further below 1.
+
+    State augmentation: y = concat([z, x_input]), dx/dt = 0 (x is held constant).
+    This lets BaseAnalogCkt.__call__ drive both z and x through a single ODETerm.
 
     Args:
-        graph: AnalogGraph with family=DEQ.
+        graph: AnalogGraph with family=DEQ (expects 3 MVM nodes: W_z, W_x, W_out).
         output_path: Path to write generated .py file.
-        sigma: Mismatch sigma for AnalogTrainable annotations.
+        sigma: Multiplicative mismatch sigma (delta ~ N(1, sigma^2)).
 
     Returns:
         Generated source code as string.
     """
     mvm_nodes = [n for n in graph.nodes if n.op_type == OpType.MVM]
-    n_layers = len(mvm_nodes)
+    if len(mvm_nodes) < 3:
+        raise ValueError(
+            f"DEQ export expects 3 MVM nodes (W_z, W_x, W_out), got {len(mvm_nodes)}"
+        )
+
+    # Extract dims from graph nodes
+    z_dim = mvm_nodes[0].input_shape[0] if mvm_nodes[0].input_shape else 64
+    hidden_dim = mvm_nodes[0].output_shape[0] if mvm_nodes[0].output_shape else 128
+    x_dim = mvm_nodes[1].input_shape[0] if mvm_nodes[1].input_shape else 64
+
+    # Flat parameter layout (all computed at export time - no dynamic indexing)
+    WZ_SIZE = hidden_dim * z_dim
+    WX_SIZE = hidden_dim * x_dim
+    BH_SIZE = hidden_dim
+    WOUT_SIZE = z_dim * hidden_dim
+    BOUT_SIZE = z_dim
+
+    WZ_END = WZ_SIZE
+    WX_END = WZ_END + WX_SIZE
+    BH_END = WX_END + BH_SIZE
+    WOUT_END = BH_END + WOUT_SIZE
+    BOUT_END = WOUT_END + BOUT_SIZE
+    N_PARAMS = BOUT_END
+    N_SHAPES = 5  # Wz, Wx, bh, Wout, bout
+
+    aug_dim = z_dim + x_dim  # augmented state y = [z, x]
 
     lines = [
-        "# Auto-generated Shem-compatible DEQ specification",
-        "# dz/dt = f_theta(z, x) - z  [gradient flow to fixed point z* = f_theta(z*, x)]",
-        "# Run with: Shem.compile(DEQAnalog()).diffeq_solve(seed=0)",
+        "# Auto-generated BaseAnalogCkt DEQ specification",
+        "# dz/dt = f_theta(z, x) - z  [gradient flow to fixed point]",
+        "# State augmented: y = concat([z, x_input]), dx/dt = 0",
+        "# Generated by neuro_analog.ir.shem_export.export_deq_to_shem()",
         "",
         "import jax.numpy as jnp",
+        "import jax.random as jrandom",
         "import diffrax",
-        "from ark.optimization.base_module import BaseAnalogCkt",
-        "from shem import AnalogTrainable, mismatch, Shem",
+        "import equinox as eqx",
+        "from ark.optimization.base_module import BaseAnalogCkt, TimeInfo",
         "",
-        "class DEQAnalog(BaseAnalogCkt):",
-        f'    """DEQ gradient-flow ODE: dz/dt = f_theta(z, x) - z',
+        "",
+        "class DEQAnalogCkt(BaseAnalogCkt):",
+        f'    """DEQ gradient-flow ODE: dz/dt = f_theta(z, x) - z.',
         f"",
-        f"    At equilibrium: z* = f_theta(z*, x).",
-        f"    Spectral radius rho(df_theta/dz) < 1 guarantees convergence.",
-        f"    Mismatch sigma={sigma} annotated for Shem mismatch-aware optimization.",
+        f"    State augmented: y = concat([z, x_input]), dx/dt = 0.",
+        f"    At equilibrium: z* = f_theta(z*, x_input).",
+        f"    rho(df_theta/dz) < 1 guarantees convergence.",
+        f"",
+        f"    z_dim={z_dim}, x_dim={x_dim}, hidden_dim={hidden_dim}",
+        f"    Mismatch sigma={sigma} on all analog weight matrices.",
         f'    """',
         "",
+        "    shapes: list",
+        "",
         "    def __init__(self):",
-        f"        self.t0 = 0.0",
-        f"        self.t1 = 5.0   # Settle by t=5 (5 RC time constants)",
-        f"        self.readout_time = 5.0",
-        f"        self.d_trainable = []  # no discrete/digital trainable params",
-    ]
-
-    # Emit weight matrices for each MVM layer
-    for i, node in enumerate(mvm_nodes):
-        in_f = node.input_shape[0] if node.input_shape else 64
-        out_f = node.output_shape[0] if node.output_shape else 64
-        lines += [
-            f"        _W{i} = jnp.zeros(({out_f}, {in_f}))",
-            f"        self.W{i} = mismatch(AnalogTrainable(init=_W{i}), sigma={sigma})",
-            f"        self.b{i} = mismatch(AnalogTrainable(init=jnp.zeros({out_f})), sigma={sigma})",
-        ]
-
-    lines += [
-        "",
-        "    def f_theta(self, z, x):",
-        '        """MLP block of the DEQ: f_theta(z, x) = W_out(tanh(W_z @ z + W_x @ x + b))."""',
-        "        h = jnp.tanh(self.W0 @ z + self.W1 @ x + self.b0)",
-    ]
-    if n_layers > 2:
-        lines.append(f"        h = jnp.tanh(self.W2 @ h + self.b2)")
-    lines += [
-        f"        return self.W{n_layers - 1} @ h + self.b{n_layers - 1}",
-        "",
-        "    def dynamics(self, t, z, args):",
-        '        """Gradient flow ODE: dz/dt = f_theta(z, x) - z."""',
-        "        x = args",
-        "        return self.f_theta(z, x) - z",
-        "",
-        "    def __call__(self, z0, x):",
-        '        """Integrate to fixed point. readout at t=t1 (equilibrium)."""',
-        "        term = diffrax.ODETerm(self.dynamics)",
-        "        solver = diffrax.Tsit5()",
-        "        saveat = diffrax.SaveAt(ts=jnp.array([self.readout_time]))",
-        "        sol = diffrax.diffeqsolve(",
-        "            term, solver, t0=self.t0, t1=self.t1, dt0=0.1,",
-        "            y0=z0, args=x, saveat=saveat,",
+        f"        a_trainable = jnp.zeros({N_PARAMS})",
+        f"        object.__setattr__(self, 'shapes', [{z_dim}, {x_dim}, {hidden_dim}])",
+        "        super().__init__(",
+        "            init_trainable=a_trainable,",
+        "            is_stochastic=False,",
+        "            solver=diffrax.Heun(),",
         "        )",
-        "        return sol.ys[0]   # z* = equilibrium state",
         "",
+        "    def make_args(self, switch, mismatch_seed, gumbel_temp, hard_gumbel):",
+        f'        """Sample mismatch perturbations and return (Wz, Wx, bh, Wout, bout)."""',
+        f"        key = jrandom.PRNGKey(mismatch_seed)",
+        f"        keys = jrandom.split(key, {N_SHAPES})",
+        f"        sigma = {sigma}",
+        f"        _Wz   = (self.a_trainable[0:{WZ_END}]"
+        f" * (1.0 + sigma * jrandom.normal(keys[0], ({WZ_SIZE},)))).reshape(({hidden_dim}, {z_dim}))",
+        f"        _Wx   = (self.a_trainable[{WZ_END}:{WX_END}]"
+        f" * (1.0 + sigma * jrandom.normal(keys[1], ({WX_SIZE},)))).reshape(({hidden_dim}, {x_dim}))",
+        f"        _bh   = (self.a_trainable[{WX_END}:{BH_END}]"
+        f" * (1.0 + sigma * jrandom.normal(keys[2], ({BH_SIZE},))))",
+        f"        _Wout = (self.a_trainable[{BH_END}:{WOUT_END}]"
+        f" * (1.0 + sigma * jrandom.normal(keys[3], ({WOUT_SIZE},)))).reshape(({z_dim}, {hidden_dim}))",
+        f"        _bout = (self.a_trainable[{WOUT_END}:{BOUT_END}]"
+        f" * (1.0 + sigma * jrandom.normal(keys[4], ({BOUT_SIZE},))))",
+        f"        return (_Wz, _Wx, _bh, _Wout, _bout)",
+        "",
+        "    def ode_fn(self, t, y, args):",
+        f'        """dy/dt = [dz/dt, 0]  where dz/dt = f_theta(z, x_input) - z."""',
+        "        Wz, Wx, bh, Wout, bout = args",
+        f"        z = y[:{z_dim}]",
+        f"        x = y[{z_dim}:]",
+        "        h  = jnp.tanh(Wz @ z + Wx @ x + bh)",
+        "        dz = Wout @ h + bout - z",
+        f"        dx = jnp.zeros({x_dim})",
+        "        return jnp.concatenate([dz, dx])",
+        "",
+        "    def noise_fn(self, t, y, args):",
+        f"        return jnp.zeros({aug_dim})",
+        "",
+        "    def readout(self, y):",
+        f'        """Extract z* from the last saved time point."""',
+        f"        return y[-1, :{z_dim}]",
+        "",
+        "",
+        'if __name__ == "__main__":',
+        "    import jax",
+        "",
+        "    ckt = DEQAnalogCkt()",
+        f"    print('Is BaseAnalogCkt subclass:', issubclass(DEQAnalogCkt, BaseAnalogCkt))",
+        f"    print('isinstance check:', isinstance(ckt, BaseAnalogCkt))",
+        f"    print('a_trainable shape:', ckt.a_trainable.shape)",
+        f"    print('is_stochastic:', ckt.is_stochastic)",
+        f"    print('solver:', type(ckt.solver).__name__)",
+        "",
+        f"    x_input = jax.random.normal(jax.random.PRNGKey(0), ({x_dim},))",
+        f"    z0 = jnp.zeros({z_dim})",
+        "    y0 = jnp.concatenate([z0, x_input])",
+        "    time_info = TimeInfo(t0=0.0, t1=5.0, dt0=0.1, saveat=jnp.array([5.0]))",
+        "    switch = jnp.array([])",
+        "    result = ckt(",
+        "        time_info, y0, switch=switch,",
+        "        args_seed=42, noise_seed=43, gumbel_temp=1.0, hard_gumbel=False,",
+        "    )",
+        f"    print('z_star shape:', result.shape)  # should be ({z_dim},)",
+        "    print('z_star:', result)",
     ]
 
     code = "\n".join(lines) + "\n"
