@@ -326,7 +326,7 @@ These measurements directly inform analog chip architects:
 
 **Methodological finding:** Continuous metrics (cross-entropy, log-likelihood) expose degradation that accuracy (argmax) masks entirely. At σ=15%, Transformer cross-entropy degrades 1.9% while accuracy remains near-perfect — logit rankings are preserved even with magnitude corruption. Shem's adjoint optimization needs the smooth signal that continuous metrics provide.
 
-### 4.2 Connection to the Achour Compilation Pipeline
+### 4.2 Connection to Analog Compilation Pipelines
 
 This paper identifies the performance gap. Shem closes it.
 

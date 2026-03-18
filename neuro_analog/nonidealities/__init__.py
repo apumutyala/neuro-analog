@@ -1,4 +1,4 @@
-"""Nonideality modeling layer — the five physical imperfections Achour's pipeline requires."""
+"""Nonideality modeling layer — five physical imperfections modeled by analog compilation pipelines."""
 
 from .mismatch import propagate_mismatch, MismatchReport
 from .noise import compute_noise_budget, NoiseBudget
