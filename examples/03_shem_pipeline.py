@@ -135,7 +135,7 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
         dynamics_description="dx/dt = f_θ(x, t)  [time-augmented MLP vector field]",
         analog_circuit_primitive="Crossbar MVM + tanh diff pair + RC integrator",
         key_digital_bottleneck="Adaptive step-size controller (digital bookkeeping only)",
-        achour_compiler_fit="Perfect — dx/dt = f_θ(x,t) IS Shem's input format",
+        analog_compiler_fit="Perfect — dx/dt = f_θ(x,t) IS Shem's input format",
     )
 
     counts = count_analog_vs_digital(analogize(model, sigma_mismatch=0.0, n_adc_bits=n_adc_bits))

@@ -28,7 +28,7 @@ A cross-architecture analog hardware tolerance simulator and IR extraction frame
 8. [Key Design Decisions](#key-design-decisions)
 9. [Findings Summary](#findings-summary)
 10. [What's Complete vs. In Progress](#whats-complete-vs-in-progress)
-11. [Connection to Shem / Ark / Unconventional AI](#connection-to-shem--ark--unconventional-ai)
+11. [Connection to Shem / Ark](#connection-to-shem--ark)
 12. [Next Steps for Compilation to Shem](#next-steps-for-compilation-to-shem)
 
 ---
@@ -638,7 +638,7 @@ ranked = tax.rank_by_analog_amenability()  # sorted list of TaxonomyEntry
 
 Each `TaxonomyEntry` includes:
 - `family`, `model_name`, `profile` (AnalogAmenabilityProfile with all 5 scores)
-- Qualitative: `has_native_dynamics`, `dynamics_type`, `analog_circuit_primitive`, `key_digital_bottleneck`, `achour_compiler_fit`
+- Qualitative: `has_native_dynamics`, `dynamics_type`, `analog_circuit_primitive`, `key_digital_bottleneck`, `analog_compiler_fit`
 
 ---
 
@@ -1121,13 +1121,11 @@ The Hopfield substrate brings DEQ from a mid-table result to the top tier. Both 
 
 ---
 
-## Connection to Shem / Ark / Unconventional AI
+## Connection to Shem / Ark
 
 **Shem** ([arXiv 2411.03557](https://arxiv.org/abs/2411.03557)) is a hardware-aware optimization framework that takes a parametrized ODE system and uses the adjoint method to find parameters robust to fabrication mismatch δ~N(1,σ²) and transient SDE noise. It models mismatch as multiplicative perturbations (same model we use) and uses Gumbel-Softmax for discrete parameters.
 
 **Ark** ([arXiv 2309.08774](https://arxiv.org/abs/2309.08774)) is the DSL/compiler that specifies analog compute paradigms as ODEs and validates/simulates them. Its `nacs_as_nn` example is the closest to our work — neural networks implemented as analog ODE systems, optimized with Shem.
-
-**Unconventional AI** (founded 2025, $475M seed at $4.5B valuation) is commercializing this research direction: silicon circuits that run neural networks "on the physics directly" rather than simulating physics on digital computers.
 
 **Where neuro-analog fits:**
 
@@ -1181,4 +1179,4 @@ The `A_c` and `B_c` parameters are already learned and available in `_S4DLayer._
 ### EBM Langevin path
 
 Replacing the RBM's Gibbs sampler with Langevin dynamics would make the EBM the most physically grounded model in the suite — the thermal noise `√(2T)dW` is not injected but physically present in subthreshold transistors, exactly as described in the Extropic DTM paper (arXiv:2510.23972). This is a meaningful architectural change but the energy function `E(v,h) = -v^T W h - b^T v - c^T h` is already implemented and differentiable.
-- [Unconventional AI](https://unconv.ai)
+
