@@ -760,6 +760,7 @@ def export_neural_ode_to_shem(
         f"import jax.random as jrandom",
         f"import diffrax",
         f"import equinox as eqx",
+        f"import lineax",
         f"",
         f"class NeuralODEAnalogCkt(eqx.Module):",
         f'    """Analog ODE conforming to Shem BaseAnalogCkt."""',
@@ -812,17 +813,20 @@ def export_neural_ode_to_shem(
         f"",
         f"    def ode_fn(self, t, x, args):",
     ]
-    
+
     unpack_str = ", ".join(
-        [f"W{idx}" + (f", b{idx}" if linear_layers[idx][1].bias is not None else "") 
+        [f"W{idx}" + (f", b{idx}" if linear_layers[idx][1].bias is not None else "")
          for idx in range(len(linear_layers))]
     )
     if not unpack_str:
         lines.append(f"        pass  # No layers extracted")
     else:
         lines.append(f"        {unpack_str} = args")
-    
-    prev = "x"
+
+    # f_theta takes [x, t] concatenated — prepend time feature
+    lines.append(f"        xt = jnp.concatenate([x, jnp.atleast_1d(jnp.asarray(t, dtype=x.dtype))])")
+
+    prev = "xt"
     for idx, (name, linear) in enumerate(linear_layers):
         has_bias = linear.bias is not None
         bias_str = f" + b{idx}" if has_bias else ""
@@ -846,10 +850,12 @@ def export_neural_ode_to_shem(
         f"",
         f"    def solve(self, x0: jnp.ndarray, seed: int = 42) -> jnp.ndarray:",
         f"        args = self.make_args(1.0, seed, 1.0, False)",
+        f"        def _noise_vf(t, x, args):",
+        f"            return lineax.DiagonalLinearOperator(self.noise_fn(t, x, args))",
         f"        term = diffrax.MultiTerm(",
         f"            diffrax.ODETerm(self.ode_fn),",
-        f"            diffrax.WeaklyDiagonalControlTerm(",
-        f"                self.noise_fn,",
+        f"            diffrax.ControlTerm(",
+        f"                _noise_vf,",
         f"                diffrax.VirtualBrownianTree(t0=self.t0, t1=self.t1, tol=1e-3, shape=x0.shape, key=jrandom.PRNGKey(seed+1))",
         f"            )",
         f"        )",
