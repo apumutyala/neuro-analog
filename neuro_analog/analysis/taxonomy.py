@@ -28,7 +28,7 @@ class TaxonomyEntry:
     dynamics_description: str = ""
     analog_circuit_primitive: str = ""  # Primary analog primitive used
     key_digital_bottleneck: str = ""    # What forces digital computation
-    achour_compiler_fit: str = ""       # How well it maps to Arco/Legno/Shem
+    analog_compiler_fit: str = ""       # How well it maps to analog ODE compilers (Ark/Shem)
 
 
 class AnalogTaxonomy:
@@ -54,7 +54,7 @@ class AnalogTaxonomy:
         dynamics_description: str = "",
         analog_circuit_primitive: str = "",
         key_digital_bottleneck: str = "",
-        achour_compiler_fit: str = "",
+        analog_compiler_fit: str = "",
     ):
         """Add an architecture profile to the taxonomy."""
         self.entries.append(TaxonomyEntry(
@@ -65,7 +65,7 @@ class AnalogTaxonomy:
             dynamics_description=dynamics_description,
             analog_circuit_primitive=analog_circuit_primitive,
             key_digital_bottleneck=key_digital_bottleneck,
-            achour_compiler_fit=achour_compiler_fit,
+            analog_compiler_fit=analog_compiler_fit,
         ))
     
     def add_neural_ode_profile(self):
@@ -91,7 +91,7 @@ class AnalogTaxonomy:
             dynamics_description="dx/dt = f_θ(x,t) (adjoint-trained MLP vector field)",
             analog_circuit_primitive="Crossbar MVM (W·x) + RC integrator (ODE step)",
             key_digital_bottleneck="Adaptive step-size controller (purely digital bookkeeping)",
-            achour_compiler_fit=(
+            analog_compiler_fit=(
                 "Perfect — dx/dt = f_θ(x,t) IS Shem's input format. "
                 "Export_neural_ode_to_shem() produces runnable Shem code today."
             ),
@@ -125,7 +125,7 @@ class AnalogTaxonomy:
             dynamics_description="Energy minimization: Boltzmann sampling",
             analog_circuit_primitive="p-bit / sMTJ arrays (Extropic TSU)",
             key_digital_bottleneck="Deep energy network evaluation",
-            achour_compiler_fit="Indirect — energy landscape, not ODE",
+            analog_compiler_fit="Indirect — energy landscape, not ODE",
         )
         
         # DEQ reference (Bai et al. 2019; feedback circuit = implicit solver)
@@ -151,7 +151,7 @@ class AnalogTaxonomy:
             dynamics_description="Implicit fixed-point: z* = f_theta(z*, x), circuit settles naturally",
             analog_circuit_primitive="Feedback MVM loop (op-amp with crossbar in feedback path)",
             key_digital_bottleneck="Convergence guarantee under mismatch (spectral radius may exceed 1)",
-            achour_compiler_fit="Strong — dz/dt = f_theta(z,x) - z is native Arco ODE format",
+            analog_compiler_fit="Strong — dz/dt = f_theta(z,x) - z is native Arco ODE format",
         )
 
         # Transformer reference (from IBM HERMES + literature)
@@ -172,7 +172,7 @@ class AnalogTaxonomy:
             dynamics_description="No native dynamics (linear algebra)",
             analog_circuit_primitive="Crossbar MVM arrays",
             key_digital_bottleneck="Softmax, LayerNorm, dynamic attention matmuls",
-            achour_compiler_fit="None — not an ODE system",
+            analog_compiler_fit="None — not an ODE system",
         )
     
     def comparison_table(self) -> str:
@@ -220,7 +220,7 @@ class AnalogTaxonomy:
                 "dynamics_type": e.dynamics_description,
                 "circuit_primitive": e.analog_circuit_primitive,
                 "digital_bottleneck": e.key_digital_bottleneck,
-                "achour_fit": e.achour_compiler_fit,
+                "analog_compiler_fit": e.analog_compiler_fit,
                 "noise_score": e.profile.noise_score,
                 "overall_score": e.profile.overall_score,
             }
@@ -249,7 +249,7 @@ class AnalogTaxonomy:
             )
             lines.append(f"     Primary analog primitive: {entry.analog_circuit_primitive}")
             lines.append(f"     Key bottleneck: {entry.key_digital_bottleneck}")
-            lines.append(f"     Achour compiler fit: {entry.achour_compiler_fit}")
+            lines.append(f"     Analog compiler fit: {entry.analog_compiler_fit}")
             lines.append("")
         
         return "\n".join(lines)

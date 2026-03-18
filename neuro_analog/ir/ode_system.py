@@ -6,7 +6,7 @@ This is the central data structure that bridges:
   - Simulation (analog_ode_solver.py)    → reads parameters, applies mismatch + noise
   - Export (shem_export.py)              → serializes to JAX/Diffrax code
 
-Aligned with Shem's API (Achour et al. 2024):
+Aligned with Shem's API (arXiv:2411.03557):
   - Parameters map to AnalogTrainable instances
   - Mismatch is multiplicative δ ~ N(1, σ²) per parameter (Shem §4.1)
   - Transient noise is additive SDE diffusion term g(x,θ,t)·dW (Shem §4.2)
