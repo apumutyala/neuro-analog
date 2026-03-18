@@ -110,7 +110,6 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
         sigma_values=[0.0, 0.05, 0.10],
         n_trials=10,
         n_adc_bits=n_adc_bits,
-        sigma_mismatch=sigma,
     )
     print("  Degradation at σ=0.10 per noise source (quality retained):")
     for src, result in sorted(ablation.items(), key=lambda kv: kv[1].normalized_mean[-1]):
