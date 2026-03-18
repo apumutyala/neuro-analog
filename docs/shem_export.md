@@ -9,6 +9,27 @@ neuro-analog sits upstream of both: it answers *which architectures survive fabr
 
 ---
 
+## Setup
+
+The core neuro-analog library is PyTorch-only. The export pipeline requires additional dependencies that aren't on PyPI and must be installed manually:
+
+```bash
+# JAX stack
+pip install jax diffrax equinox lineax
+
+# Ark (no PyPI package — install from source)
+git clone https://github.com/WangYuNeng/Ark
+pip install -e ./Ark
+```
+
+Verify:
+
+```python
+from ark.optimization.base_module import BaseAnalogCkt  # should import cleanly
+```
+
+---
+
 ## The pipeline
 
 ```
@@ -55,6 +76,7 @@ grad = compiled.gradient(your_nll_loss)
 ```
 
 Why Neural ODE maps cleanly:
+
 - Only 2 D/A boundaries (1 DAC input + 1 ADC output)
 - f_θ is a small MLP (~1K params) — fits within a 128×128 crossbar
 - Adjoint training and Diffrax ODE solver are already what Shem uses internally
