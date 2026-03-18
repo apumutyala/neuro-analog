@@ -749,67 +749,95 @@ def export_neural_ode_to_shem(
             "silu": "jax.nn.silu",
         }.get(name, "jnp.tanh")
 
+    # Compute static per-tensor offsets at export time (shapes are known)
+    import numpy as _np
+    shapes = []
+    for idx, (name, linear) in enumerate(linear_layers):
+        shapes.append(linear.weight.detach().float().numpy().shape)
+        if linear.bias is not None:
+            shapes.append(linear.bias.detach().float().numpy().shape)
+    offsets = []
+    _off = 0
+    for s in shapes:
+        offsets.append(_off)
+        _off += int(_np.prod(s))
+    total_params = _off
+
     lines = [
         f'"""',
-        f"Shem-compatible JAX ODE specification for {model_name}.",
-        f"Complies directly with BaseAnalogCkt API.",
+        f"Ark-compatible JAX ODE specification for {model_name}.",
+        f"Proper BaseAnalogCkt subclass — compatible with OptCompiler output format.",
+        f"",
+        f"Usage:",
+        f"    from ark.optimization.base_module import TimeInfo",
+        f"    ckt = NeuralODEAnalogCkt()",
+        f"    time_info = TimeInfo(t0={t0}, t1={t1}, dt0=0.01, saveat=jnp.array([{t1}]))",
+        f"    result = ckt(time_info, x0, switch=jnp.array([]), args_seed=42, noise_seed=43)",
         f'"""',
         f"",
         f"import jax",
         f"import jax.numpy as jnp",
         f"import jax.random as jrandom",
         f"import diffrax",
-        f"import equinox as eqx",
-        f"import lineax",
+        f"from ark.optimization.base_module import BaseAnalogCkt, TimeInfo",
         f"",
-        f"class NeuralODEAnalogCkt(eqx.Module):",
-        f'    """Analog ODE conforming to Shem BaseAnalogCkt."""',
-        f"    a_trainable: jnp.ndarray",
+        f"class NeuralODEAnalogCkt(BaseAnalogCkt):",
+        f'    """Neural ODE analog circuit (BaseAnalogCkt subclass).',
+        f"",
+        f"    a_trainable holds all MLP weights concatenated flat.",
+        f"    make_args applies multiplicative mismatch (delta ~ N(1, sigma^2))",
+        f"    and returns per-layer (W, b) tuples for ode_fn.",
+        f'    """',
         f"    shapes: list",
-        f"    mismatch_sigma: float",
-        f"    t0: float",
-        f"    t1: float",
-        f"    readout_time: float",
         f"",
         f"    def __init__(self):",
         f"        arrays = []",
-        f"        self.shapes = []",
+        f"        shapes = []",
     ]
 
-    shapes = []
+    shapes_reset = []  # rebuild for the loop below
     for idx, (name, linear) in enumerate(linear_layers):
         W = linear.weight.detach().float().numpy()
         b = linear.bias.detach().float().numpy() if linear.bias is not None else None
-        
+
         lines.append(f"        _W{idx} = jnp.array({W.tolist()})")
         lines.append(f"        arrays.append(_W{idx}.flatten())")
-        lines.append(f"        self.shapes.append(_W{idx}.shape)")
-        shapes.append(W.shape)
+        lines.append(f"        shapes.append(_W{idx}.shape)")
+        shapes_reset.append(W.shape)
         if b is not None:
             lines.append(f"        _b{idx} = jnp.array({b.tolist()})")
             lines.append(f"        arrays.append(_b{idx}.flatten())")
-            lines.append(f"        self.shapes.append(_b{idx}.shape)")
-            shapes.append(b.shape)
+            lines.append(f"        shapes.append(_b{idx}.shape)")
+            shapes_reset.append(b.shape)
 
     lines += [
-        f"        self.a_trainable = jnp.concatenate(arrays)",
-        f"        self.mismatch_sigma = {mismatch_sigma}",
-        f"        self.t0 = {t0}",
-        f"        self.t1 = {t1}",
-        f"        self.readout_time = {t1}",
+        f"        a_trainable = jnp.concatenate(arrays)",
+        f"        # Store shapes before super().__init__ freezes the module",
+        f"        object.__setattr__(self, 'shapes', shapes)",
+        f"        super().__init__(",
+        f"            init_trainable=a_trainable,",
+        f"            is_stochastic=False,",
+        f"            solver=diffrax.Heun(),  # Heun provides error estimates for PIDController",
+        f"        )",
         f"",
-        f"    def make_args(self, switch, seed, gumbel_temp, hard_gumbel):",
-        f"        key = jrandom.PRNGKey(seed)",
-        f"        keys = jrandom.split(key, len(self.shapes))",
-        f"        params = []",
-        f"        offset = 0",
-        f"        for i, shape in enumerate(self.shapes):",
-        f"            size = jnp.prod(jnp.array(shape))",
-        f"            flat = self.a_trainable[offset:offset+size]",
-        f"            mismatch = flat * (1.0 + self.mismatch_sigma * jrandom.normal(keys[i], flat.shape))",
-        f"            params.append(mismatch.reshape(shape))",
-        f"            offset += size",
-        f"        return tuple(params)",
+        f"    def make_args(self, switch, mismatch_seed, gumbel_temp, hard_gumbel):",
+        f"        # mismatch_seed matches BaseAnalogCkt.__call__ args_seed parameter",
+        f"        key = jrandom.PRNGKey(mismatch_seed)",
+        f"        keys = jrandom.split(key, {len(shapes_reset)})",
+        f"        sigma = {mismatch_sigma}",
+    ]
+
+    # Emit static-offset slice for each tensor — no Python loop at JAX trace time
+    for i, (shape, off) in enumerate(zip(shapes_reset, offsets)):
+        size = int(_np.prod(shape))
+        lines.append(
+            f"        _p{i} = (self.a_trainable[{off}:{off+size}]"
+            f" * (1.0 + sigma * jrandom.normal(keys[{i}], ({size},)))).reshape({shape})"
+        )
+
+    param_tuple = ", ".join(f"_p{i}" for i in range(len(shapes_reset)))
+    lines += [
+        f"        return ({param_tuple},)",
         f"",
         f"    def ode_fn(self, t, x, args):",
     ]
@@ -843,40 +871,25 @@ def export_neural_ode_to_shem(
         f"        return {prev}",
         f"",
         f"    def noise_fn(self, t, x, args):",
+        f"        # Small thermal noise amplitude — only used when is_stochastic=True",
         f"        return jnp.ones_like(x) * 0.01",
         f"",
         f"    def readout(self, y):",
-        f"        return y",
-        f"",
-        f"    def solve(self, x0: jnp.ndarray, seed: int = 42) -> jnp.ndarray:",
-        f"        args = self.make_args(1.0, seed, 1.0, False)",
-        f"        def _noise_vf(t, x, args):",
-        f"            return lineax.DiagonalLinearOperator(self.noise_fn(t, x, args))",
-        f"        term = diffrax.MultiTerm(",
-        f"            diffrax.ODETerm(self.ode_fn),",
-        f"            diffrax.ControlTerm(",
-        f"                _noise_vf,",
-        f"                diffrax.VirtualBrownianTree(t0=self.t0, t1=self.t1, tol=1e-3, shape=x0.shape, key=jrandom.PRNGKey(seed+1))",
-        f"            )",
-        f"        )",
-        f"        solver = diffrax.Euler()",
-        f"        saveat = diffrax.SaveAt(ts=jnp.array([self.readout_time]))",
-        f"        sol = diffrax.diffeqsolve(",
-        f"            term, solver, t0=self.t0, t1=self.t1, dt0=0.01,",
-        f"            y0=x0, saveat=saveat, args=args",
-        f"        )",
-        f"        return self.readout(sol.ys[0])",
+        f"        # y shape: (len(saveat), state_dim) — return final time point",
+        f"        return y[-1]",
         f"",
         f"if __name__ == '__main__':",
         f"    ckt = NeuralODEAnalogCkt()",
+        f"    time_info = TimeInfo(t0={t0}, t1={t1}, dt0=0.01, saveat=jnp.array([{t1}]))",
         f"    x0 = jnp.zeros(({state_dim},))",
-        f"    ys = ckt.solve(x0)",
-        f"    print(f'Solved shape: {{ys.shape}}')",
+        f"    switch = jnp.array([])",
+        f"    result = ckt(time_info, x0, switch, args_seed=42, noise_seed=43)",
+        f"    print(f'Result shape: {{result.shape}}')",
         f""
     ]
 
     code = "\n".join(lines) + "\n"
-    Path(output_path).write_text(code)
+    Path(output_path).write_text(code, encoding="utf-8")
     try:
         from loguru import logger as log
         log.info(f"Shem export written to {output_path} ({len(code)} chars)")
