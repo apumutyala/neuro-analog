@@ -50,16 +50,31 @@ _DEFAULT_CAP_F: float = 1e-12
 
 
 class _BaseAnalogActivation(nn.Module):
-    """Shared mismatch/noise infrastructure for all analog activations."""
+    """Shared mismatch/noise infrastructure for all analog activations.
+
+    Physical model: each neuron's differential pair has independent gain and
+    offset mismatch from W/L ratio and V_th variance:
+        gain_i   ~ N(1, σ²)          per neuron i
+        offset_i ~ N(0, (0.5σ)²)    per neuron i
+
+    n_features is not known at construction time (activations are size-agnostic
+    in PyTorch). Lazy initialization: on the first forward pass, _gain and _offset
+    are resized from scalar placeholders to (n_features,) vectors and resampled.
+    Subsequent resample_mismatch() calls use the stored _n_features.
+
+    Buffers are named _gain/_offset (not alpha/beta) to avoid conflict with
+    subclass parameters — e.g. AnalogELU.alpha is the ELU negative-slope.
+    """
 
     def __init__(self, sigma_mismatch: float = 0.05):
         super().__init__()
         self.sigma_mismatch = sigma_mismatch
         self._use_mismatch = True
         self._use_thermal = True
-        # α ~ N(1, σ²),  β ~ N(0, (0.5σ)²)  — scalar per activation unit
-        self.register_buffer("alpha", torch.tensor(1.0))
-        self.register_buffer("beta", torch.tensor(0.0))
+        self._n_features: int | None = None
+        # Scalar placeholders; resized to (n_features,) on first forward pass.
+        self.register_buffer("_gain", torch.tensor(1.0))
+        self.register_buffer("_offset", torch.tensor(0.0))
         self._resample_params()
 
     def resample_mismatch(self, sigma: float | None = None) -> None:
@@ -72,22 +87,41 @@ class _BaseAnalogActivation(nn.Module):
         self._use_thermal = thermal
 
     def _resample_params(self) -> None:
-        device = self.alpha.device
+        """Sample per-neuron gain and offset mismatch.
+
+        Uses _n_features if known (after first forward pass) to sample vectors.
+        Falls back to scalars until the feature dimension is observed.
+        """
+        n = self._n_features
+        device = self._gain.device
         if self.sigma_mismatch > 0:
-            self.alpha = torch.tensor(
-                1.0 + self.sigma_mismatch * torch.randn(1).item(), device=device
-            )
-            self.beta = torch.tensor(
-                0.5 * self.sigma_mismatch * torch.randn(1).item(), device=device
-            )
+            if n is not None:
+                self._gain = 1.0 + self.sigma_mismatch * torch.randn(n, device=device)
+                self._offset = 0.5 * self.sigma_mismatch * torch.randn(n, device=device)
+            else:
+                self._gain = torch.tensor(
+                    1.0 + self.sigma_mismatch * torch.randn(1).item(), device=device
+                )
+                self._offset = torch.tensor(
+                    0.5 * self.sigma_mismatch * torch.randn(1).item(), device=device
+                )
         else:
-            self.alpha = torch.tensor(1.0, device=device)
-            self.beta = torch.tensor(0.0, device=device)
+            if n is not None:
+                self._gain = torch.ones(n, device=device)
+                self._offset = torch.zeros(n, device=device)
+            else:
+                self._gain = torch.tensor(1.0, device=device)
+                self._offset = torch.tensor(0.0, device=device)
 
     def _apply_mismatch(self, x: torch.Tensor) -> torch.Tensor:
-        if self._use_mismatch and self.sigma_mismatch > 0:
-            return self.alpha * x + self.beta
-        return x
+        if not (self._use_mismatch and self.sigma_mismatch > 0):
+            return x
+        n = x.shape[-1]
+        # Lazy init: first forward (or unexpected size change) triggers per-neuron resample
+        if self._n_features != n:
+            self._n_features = n
+            self._resample_params()
+        return self._gain * x + self._offset
 
 
 class AnalogTanh(_BaseAnalogActivation):
@@ -110,11 +144,7 @@ class AnalogReLU(_BaseAnalogActivation):
     """ReLU via diode-connected transistor. β creates an offset threshold."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self._use_mismatch and self.sigma_mismatch > 0:
-            y = F.relu(self.alpha * x.float() + self.beta)
-        else:
-            y = F.relu(x.float())
-        return y
+        return F.relu(self._apply_mismatch(x.float()))
 
 
 class _DigitalWithCrossing(nn.Module):
