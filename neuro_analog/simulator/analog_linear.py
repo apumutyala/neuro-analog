@@ -1,13 +1,24 @@
 """
 AnalogLinear: nn.Linear replacement modeling a crossbar MVM array.
 
-Physical model (three noise sources applied in order):
+Physical model (four noise sources applied in order):
+
+0. INPUT DAC QUANTIZATION (deterministic, at domain boundary)
+   x_q = quantize(x, n_bits, V_ref)   — same uniform quantizer as output ADC
+   The input vector must be converted to row voltages by a DAC before being
+   applied to the crossbar wordlines. Gated by _is_readout: in 'full_analog'
+   profile, intermediate layers receive a continuous analog voltage from the
+   previous stage and skip this step. The first layer always sees digital
+   input, but this small inaccuracy is negligible for normalized inputs.
 
 1. CONDUCTANCE MISMATCH (static, sampled once per device instance)
-   W_device = W_nominal * δ,   δ ~ N(1, σ_mismatch²)
+   W_device = W_nominal * δ_W,   δ_W ~ N(1, σ_mismatch²)  — per weight cell
+   b_device = b_nominal * δ_b,   δ_b ~ N(1, σ_mismatch²)  — per output neuron
    Same δ persists across all forward passes — it is baked into the
    fabricated conductance values of the RRAM/PCM cells. This is the
    Shem §4.1 formulation: θ' = δ ◦ θ, δ ~ N(1, σ²·I).
+   Bias is implemented as a constant current source; its W/L mismatch
+   follows the same N(1, σ²) model as the weight cells.
 
 2. THERMAL READ NOISE (dynamic, drawn fresh each forward pass)
    y = W_device @ x + ε,   ε ~ N(0, σ_thermal² · I)
@@ -98,7 +109,12 @@ class AnalogLinear(nn.Module):
             self.register_buffer("bias", None)
 
         # Static mismatch δ ~ N(1, σ²): sampled once, held fixed per device
+        # delta_bias: per-output-neuron bias current source mismatch (shape: out_features)
         self.register_buffer("delta", torch.ones(out_features, in_features))
+        if bias is not None:
+            self.register_buffer("delta_bias", torch.ones(out_features))
+        else:
+            self.register_buffer("delta_bias", None)
         self._resample_delta()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -140,13 +156,24 @@ class AnalogLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.float()
 
+        # Step 0 — Input DAC quantization (row voltages must come from a DAC)
+        # Gated by _is_readout: full_analog intermediate layers receive a continuous
+        # analog signal from the previous stage and skip this step.
+        if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
+            n_levels = 2 ** self.n_adc_bits - 1
+            scale = n_levels / (2.0 * self.v_ref)
+            x = torch.clamp(x, -self.v_ref, self.v_ref)
+            x = torch.round(x * scale) / scale
+
         # Step 1 — Conductance mismatch (static per device)
         if self._use_mismatch and self.sigma_mismatch > 0:
             W_eff = self.W_nominal * self.delta
+            bias_eff = self.bias * self.delta_bias if self.delta_bias is not None else self.bias
         else:
             W_eff = self.W_nominal
+            bias_eff = self.bias
 
-        y = F.linear(x, W_eff, self.bias)
+        y = F.linear(x, W_eff, bias_eff)
 
         # Step 2 — Thermal read noise: σ = sqrt(kT/C) * sqrt(in_features)
         if self._use_thermal:
@@ -173,8 +200,12 @@ class AnalogLinear(nn.Module):
         if self.sigma_mismatch > 0:
             self.delta = torch.ones(self.out_features, self.in_features, device=device) + \
                          self.sigma_mismatch * torch.randn(self.out_features, self.in_features, device=device)
+            if self.delta_bias is not None:
+                self.delta_bias = 1.0 + self.sigma_mismatch * torch.randn(self.out_features, device=device)
         else:
             self.delta = torch.ones(self.out_features, self.in_features, device=device)
+            if self.delta_bias is not None:
+                self.delta_bias = torch.ones(self.out_features, device=device)
 
     def extra_repr(self) -> str:
         return (

@@ -3,11 +3,17 @@ AnalogConv1d / AnalogConv2d / AnalogConv3d: convolutional layer replacements.
 
 Physical model — identical to AnalogLinear, applied to the convolution weight tensor:
 
+0. INPUT DAC QUANTIZATION
+   Same uniform quantizer applied to the input tensor before convolution.
+   Gated by _is_readout (same semantics as AnalogLinear).
+
 1. CONDUCTANCE MISMATCH (static, per device)
-   W_device = W_nominal * δ,   δ ~ N(1, σ²)   — same shape as weight tensor
+   W_device = W_nominal * δ_W,  δ_W ~ N(1, σ²)  — same shape as weight tensor
+   b_device = b_nominal * δ_b,  δ_b ~ N(1, σ²)  — per output channel
    In analog hardware, a convolution is a tiled MVM: the input is unfolded
    (im2col) and the kernel weights form one row of the crossbar per output channel.
    Each weight cell has its own fabricated conductance with independent mismatch.
+   Bias current sources follow the same mismatch model.
 
 2. THERMAL READ NOISE
    σ_thermal = sqrt(kT/C) * sqrt(N_in)
@@ -82,6 +88,7 @@ def _make_analog_conv(
             self._use_mismatch = True
             self._use_thermal = True
             self._use_quantization = True
+            self._is_readout = True
             self._conv_fn = conv_cls
 
             # Normalise kernel_size to tuple
@@ -105,8 +112,12 @@ def _make_analog_conv(
             else:
                 self.register_buffer("bias", None)
 
-            # δ has the same shape as the weight tensor
+            # δ_W has the same shape as the weight tensor; δ_b is per output channel
             self.register_buffer("delta", torch.ones_like(self.W_nominal))
+            if bias_data is not None:
+                self.register_buffer("delta_bias", torch.ones(out_channels))
+            else:
+                self.register_buffer("delta_bias", None)
             self._resample_delta()
 
         def resample_mismatch(self, sigma: float | None = None) -> None:
@@ -134,14 +145,23 @@ def _make_analog_conv(
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             x = x.float()
 
+            # Step 0 — Input DAC quantization
+            if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
+                n_levels = 2 ** self.n_adc_bits - 1
+                scale = n_levels / (2.0 * self.v_ref)
+                x = torch.clamp(x, -self.v_ref, self.v_ref)
+                x = torch.round(x * scale) / scale
+
             # Step 1 — conductance mismatch
             if self._use_mismatch and self.sigma_mismatch > 0:
                 W_eff = self.W_nominal * self.delta
+                bias_eff = self.bias * self.delta_bias if self.delta_bias is not None else self.bias
             else:
                 W_eff = self.W_nominal
+                bias_eff = self.bias
 
             y = self._conv_fn(
-                x, W_eff, self.bias,
+                x, W_eff, bias_eff,
                 self.stride, self.padding, self.dilation, self.groups,
             )
 
@@ -154,7 +174,7 @@ def _make_analog_conv(
                 y = y + torch.randn_like(y) * sigma_th
 
             # Step 3 — ADC quantization
-            if self._use_quantization and self.n_adc_bits < 32:
+            if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
                 n_levels = 2 ** self.n_adc_bits - 1
                 scale = n_levels / (2.0 * self.v_ref)
                 y = torch.clamp(y, -self.v_ref, self.v_ref)
@@ -169,8 +189,14 @@ def _make_analog_conv(
                     torch.ones_like(self.W_nominal, device=device)
                     + self.sigma_mismatch * torch.randn_like(self.W_nominal, device=device)
                 )
+                if self.delta_bias is not None:
+                    self.delta_bias = 1.0 + self.sigma_mismatch * torch.randn(
+                        self.out_channels, device=device
+                    )
             else:
                 self.delta = torch.ones_like(self.W_nominal, device=device)
+                if self.delta_bias is not None:
+                    self.delta_bias = torch.ones(self.out_channels, device=device)
 
         def extra_repr(self) -> str:
             return (
