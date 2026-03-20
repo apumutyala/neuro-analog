@@ -94,6 +94,7 @@ def analogize(
     Returns:
         New nn.Module with analog-replaced layers.
     """
+    device = next((p.device for p in model.parameters()), torch.device("cpu"))
     analog_model = copy.deepcopy(model)
     _replace_recursive(
         analog_model,
@@ -103,6 +104,7 @@ def analogize(
         cap_F=cap_F,
         v_ref=v_ref,
     )
+    analog_model = analog_model.to(device)
     return analog_model
 
 
