@@ -47,7 +47,7 @@ from .analog_attention import AnalogMultiheadAttention
 _ACT_REPLACEMENTS = {
     nn.Tanh:       lambda m, **kw: AnalogTanh(sigma_mismatch=kw["sigma_mismatch"]),
     nn.Sigmoid:    lambda m, **kw: AnalogSigmoid(sigma_mismatch=kw["sigma_mismatch"]),
-    nn.ReLU:       lambda m, **kw: AnalogReLU(sigma_mismatch=kw["sigma_mismatch"]),
+    nn.ReLU:       lambda m, **kw: AnalogReLU(rail=kw["v_ref"], sigma_mismatch=kw["sigma_mismatch"]),
     nn.ELU:        lambda m, **kw: AnalogELU(alpha=m.alpha, sigma_mismatch=kw["sigma_mismatch"]),
     nn.LeakyReLU:  lambda m, **kw: AnalogLeakyReLU(negative_slope=m.negative_slope, sigma_mismatch=kw["sigma_mismatch"]),
     nn.GELU:       lambda m, **kw: AnalogGELU(
@@ -205,30 +205,33 @@ def set_all_noise(
 
 
 def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None:
-    """Set V_ref for all AnalogLinear layers from a representative forward pass.
+    """Set v_ref and v_ref_input for all crossbar layers from a representative forward pass.
 
-    Runs a noiseless forward pass (mismatch+thermal off) through the model,
-    capturing activation ranges at each AnalogLinear layer via hooks.
-    Updates v_ref = 1.1 * max(|activation|) for each layer.
+    Runs a noiseless forward pass (mismatch+thermal+quantization off) through the model,
+    capturing activation ranges at each AnalogLinear/AnalogConv layer via hooks.
+      v_ref       = 1.1 * max(|output|)  — output ADC range
+      v_ref_input = 1.1 * max(|input|)   — input DAC range
 
-    This requires a hook-based activation capture, which doesn't
-    work cleanly when layers are inside sequential or custom modules. For the
-    experiment, we use v_ref=1.0 (HCDCv2 hardware spec) as the default, which
-    is correct for weight-normalized models with typical activation scales.
+    Both are set per layer, since input and output distributions can differ
+    significantly (e.g. first layer sees raw data, intermediate layers see
+    bounded activations).
     """
     # Temporarily disable noise for calibration pass
     set_all_noise(model, thermal=False, quantization=False, mismatch=False)
 
-    captured: dict[str, torch.Tensor] = {}
     hooks = []
 
+    from .analog_conv import AnalogConv1d, AnalogConv2d, AnalogConv3d
+    calibrate_types = (AnalogLinear, AnalogConv1d, AnalogConv2d, AnalogConv3d)
+
     for name, module in model.named_modules():
-        if isinstance(module, AnalogLinear):
+        if isinstance(module, calibrate_types):
             def make_hook(n, m):
                 def hook(mod, inp, out):
-                    m.v_ref = float(out.detach().abs().max().item()) * 1.1
-                    if m.v_ref == 0:
-                        m.v_ref = 1.0
+                    peak_in = float(inp[0].detach().abs().max().item())
+                    m.v_ref_input = peak_in * 1.1 if peak_in > 0 else 1.0
+                    peak_out = float(out.detach().abs().max().item())
+                    m.v_ref = peak_out * 1.1 if peak_out > 0 else 1.0
                 return hook
             hooks.append(module.register_forward_hook(make_hook(name, module)))
 
@@ -313,14 +316,17 @@ def count_analog_vs_digital(model: nn.Module) -> dict:
           coverage_pct: analog_params / (analog_params + digital_params) * 100
     """
     from .analog_conv import AnalogConv1d, AnalogConv2d, AnalogConv3d
+    # AnalogMultiheadAttention is intentionally excluded: named_modules() traverses
+    # into its q/k/v/out_proj children (all AnalogLinear), which are counted directly.
+    # Including the MHA container would inflate analog_layers by 1 per attention block.
     analog_types = (
         AnalogLinear,
         AnalogConv1d, AnalogConv2d, AnalogConv3d,
-        AnalogMultiheadAttention,
         AnalogTanh, AnalogSigmoid, AnalogReLU,
         AnalogELU, AnalogLeakyReLU,
         AnalogGELU, AnalogSiLU, AnalogHardswish, AnalogMish,
     )
+    analog_conv_types = (AnalogConv1d, AnalogConv2d, AnalogConv3d)
     digital_non_trivial = (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d,
                            nn.BatchNorm3d, nn.GroupNorm, nn.RMSNorm if hasattr(nn, "RMSNorm") else nn.LayerNorm,
                            nn.Softmax, nn.Embedding)
@@ -337,6 +343,10 @@ def count_analog_vs_digital(model: nn.Module) -> dict:
             analog_layers += 1
             analog_names.append(name)
             if isinstance(module, AnalogLinear):
+                analog_params += module.W_nominal.numel()
+                if module.bias is not None:
+                    analog_params += module.bias.numel()
+            elif isinstance(module, analog_conv_types):
                 analog_params += module.W_nominal.numel()
                 if module.bias is not None:
                     analog_params += module.bias.numel()
