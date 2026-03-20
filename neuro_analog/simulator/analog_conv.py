@@ -85,6 +85,7 @@ def _make_analog_conv(
             self.temperature_K = temperature_K
             self.cap_F = cap_F
             self.v_ref = v_ref
+            self.v_ref_input = v_ref  # calibrated separately from input distribution
             self._use_mismatch = True
             self._use_thermal = True
             self._use_quantization = True
@@ -133,23 +134,25 @@ def _make_analog_conv(
             self._use_quantization = quantization
 
         def calibrate(self, x: torch.Tensor) -> None:
-            """Set V_ref from a noiseless forward pass."""
+            """Set v_ref and v_ref_input from a noiseless forward pass."""
             with torch.no_grad():
+                peak_in = float(x.float().abs().max().item())
+                self.v_ref_input = peak_in * 1.1 if peak_in > 0 else 1.0
                 y = self._conv_fn(
                     x.float(), self.W_nominal, self.bias,
                     self.stride, self.padding, self.dilation, self.groups,
                 )
-                peak = float(y.abs().max().item())
-                self.v_ref = peak * 1.1 if peak > 0 else 1.0
+                peak_out = float(y.abs().max().item())
+                self.v_ref = peak_out * 1.1 if peak_out > 0 else 1.0
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             x = x.float()
 
-            # Step 0 — Input DAC quantization
+            # Step 0 — Input DAC quantization (uses v_ref_input, not output v_ref)
             if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
                 n_levels = 2 ** self.n_adc_bits - 1
-                scale = n_levels / (2.0 * self.v_ref)
-                x = torch.clamp(x, -self.v_ref, self.v_ref)
+                scale = n_levels / (2.0 * self.v_ref_input)
+                x = torch.clamp(x, -self.v_ref_input, self.v_ref_input)
                 x = torch.round(x * scale) / scale
 
             # Step 1 — conductance mismatch
