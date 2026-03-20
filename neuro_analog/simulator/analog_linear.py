@@ -90,6 +90,7 @@ class AnalogLinear(nn.Module):
         self.temperature_K = temperature_K
         self.cap_F = cap_F
         self.v_ref = v_ref
+        self.v_ref_input = v_ref  # calibrated separately from input distribution
 
         # Noise source toggles (for ablation experiments)
         self._use_mismatch = True
@@ -139,15 +140,17 @@ class AnalogLinear(nn.Module):
         self._use_quantization = quantization
 
     def calibrate(self, x: torch.Tensor) -> None:
-        """Set V_ref from a calibration forward pass (noiseless).
+        """Set v_ref and v_ref_input from a calibration forward pass (noiseless).
 
         Call this once with representative input data before running sweeps
-        to avoid excessive clipping in the ADC stage.
+        to avoid excessive clipping in the ADC/DAC stages.
         """
         with torch.no_grad():
+            peak_in = float(x.float().abs().max().item())
+            self.v_ref_input = peak_in * 1.1 if peak_in > 0 else 1.0
             y = F.linear(x.float(), self.W_nominal, self.bias)
-            peak = float(y.abs().max().item())
-            self.v_ref = peak * 1.1 if peak > 0 else 1.0  # 10% headroom
+            peak_out = float(y.abs().max().item())
+            self.v_ref = peak_out * 1.1 if peak_out > 0 else 1.0
 
     # ──────────────────────────────────────────────────────────────────────
     # Forward pass
@@ -159,10 +162,11 @@ class AnalogLinear(nn.Module):
         # Step 0 — Input DAC quantization (row voltages must come from a DAC)
         # Gated by _is_readout: full_analog intermediate layers receive a continuous
         # analog signal from the previous stage and skip this step.
+        # Uses v_ref_input, calibrated from the input distribution (not output range).
         if self._use_quantization and self._is_readout and self.n_adc_bits < 32:
             n_levels = 2 ** self.n_adc_bits - 1
-            scale = n_levels / (2.0 * self.v_ref)
-            x = torch.clamp(x, -self.v_ref, self.v_ref)
+            scale = n_levels / (2.0 * self.v_ref_input)
+            x = torch.clamp(x, -self.v_ref_input, self.v_ref_input)
             x = torch.round(x * scale) / scale
 
         # Step 1 — Conductance mismatch (static per device)
