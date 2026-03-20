@@ -141,10 +141,20 @@ class AnalogSigmoid(_BaseAnalogActivation):
 
 
 class AnalogReLU(_BaseAnalogActivation):
-    """ReLU via diode-connected transistor. β creates an offset threshold."""
+    """ReLU via diode-connected transistor with supply rail saturation.
+
+    Positive half: linear pass-through up to the supply rail (VDD).
+    Negative half: reverse-biased diode → output ≈ 0.
+    Gain/offset mismatch applied before the diode characteristic.
+    Output clipped at rail (default 1.0V, matching HCDCv2 supply spec).
+    """
+
+    def __init__(self, rail: float = 1.0, sigma_mismatch: float = 0.05):
+        super().__init__(sigma_mismatch=sigma_mismatch)
+        self.rail = rail
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.relu(self._apply_mismatch(x.float()))
+        return torch.clamp(F.relu(self._apply_mismatch(x.float())), 0.0, self.rail)
 
 
 class _DigitalWithCrossing(nn.Module):
