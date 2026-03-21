@@ -87,15 +87,15 @@ class AnalogMultiheadAttention(nn.Module):
         _b = torch.zeros(embed_dim) if bias else None
 
         self.q_proj = AnalogLinear(embed_dim, embed_dim,
-                                   weight=_zero_qk, bias_data=_b, **analog_kw)
+                                   weight=_zero_qk, bias=_b, **analog_kw)
         self.k_proj = AnalogLinear(self.kdim, embed_dim,
                                    weight=torch.zeros(embed_dim, self.kdim),
-                                   bias_data=_b, **analog_kw)
+                                   bias=_b, **analog_kw)
         self.v_proj = AnalogLinear(self.vdim, embed_dim,
                                    weight=_zero_v.T.contiguous(),
-                                   bias_data=_b, **analog_kw)
+                                   bias=_b, **analog_kw)
         self.out_proj = AnalogLinear(embed_dim, embed_dim,
-                                     weight=_zero_o, bias_data=_b, **analog_kw)
+                                     weight=_zero_o, bias=_b, **analog_kw)
 
         self.scale = self.head_dim ** -0.5
 
