@@ -119,16 +119,27 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         calib_data = None
         print(f"  Warning: No _get_data() found, skipping V_ref calibration")
 
-    # Time-dependent models need (t, x) call signature — skip calibration
-    calib_data_to_use = None if name in ["neural_ode", "diffusion", "flow"] else calib_data
+    # Time-dependent models need (t, x) call signature — skip output V_ref calibration.
+    # Their first-layer input is z0 ~ N(0, I); set v_ref_input = 3.3 (3-sigma + 10%
+    # headroom) so the input DAC doesn't clip valid Gaussian starting points.
+    _GAUSSIAN_INPUT_MODELS = {"neural_ode", "diffusion", "flow"}
+    calib_data_to_use = None if name in _GAUSSIAN_INPUT_MODELS else calib_data
     if calib_data_to_use is not None:
         calib_data_to_use = calib_data_to_use.to(_DEVICE)
+
+    # Models whose first-layer input is z0 ~ N(0, I): set v_ref_input = 3.3
+    # (3-sigma of standard normal + 10% headroom) so the input DAC doesn't clip
+    # valid Gaussian starting points. Calibration is skipped for these models
+    # (time-dependent call signature), so without this the default v_ref=1.0
+    # would clip ~32% of samples and corrupt the generation baseline.
+    gaussian_kwargs = {"v_ref_input": 3.3} if name in _GAUSSIAN_INPUT_MODELS else {}
 
     # 1. Mismatch sweep
     print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
     t0 = time.time()
     result = mismatch_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES, n_trials=n_trials,
-                            calibration_data=calib_data_to_use, analog_domain=analog_domain)
+                            calibration_data=calib_data_to_use, analog_domain=analog_domain,
+                            **gaussian_kwargs)
     result.save(str(_RESULTS_DIR / f"{name}_mismatch{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s. Threshold@10%: {result.degradation_threshold():.3f}")
 
@@ -137,7 +148,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     t0 = time.time()
     ablation = ablation_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES,
                               n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use,
-                              analog_domain=analog_domain)
+                              analog_domain=analog_domain, **gaussian_kwargs)
     for noise_type, res in ablation.items():
         res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s")
@@ -147,7 +158,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     t0 = time.time()
     adc_result = adc_sweep(model, eval_fn, bit_values=_BIT_VALUES, sigma_mismatch=0.05,
                            n_trials=max(20, n_trials//2), calibration_data=calib_data_to_use,
-                           analog_domain=analog_domain)
+                           analog_domain=analog_domain, **gaussian_kwargs)
     adc_result.save(str(_RESULTS_DIR / f"{name}_adc{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s")
 
@@ -167,7 +178,8 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
 
         for i, sigma in enumerate(_SIGMA_VALUES):
             for j in range(n_trials):
-                analog_model = analogize(digital_model, sigma_mismatch=sigma, n_adc_bits=8)
+                analog_model = analogize(digital_model, sigma_mismatch=sigma, n_adc_bits=8,
+                                         **gaussian_kwargs)
                 configure_analog_profile(analog_model, analog_domain)
                 if calib_data_to_use is not None:
                     from neuro_analog.simulator import calibrate_analog_model

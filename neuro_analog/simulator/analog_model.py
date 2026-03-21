@@ -75,6 +75,7 @@ def analogize(
     temperature_K: float = 300.0,
     cap_F: float = 1e-12,
     v_ref: float = 1.0,
+    v_ref_input: float | None = None,
 ) -> nn.Module:
     """Convert any PyTorch model to analog-simulated execution.
 
@@ -105,6 +106,16 @@ def analogize(
         v_ref=v_ref,
     )
     analog_model = analog_model.to(device)
+
+    # Override input DAC range if the model's first-layer input distribution differs
+    # from the output distribution (e.g. z0 ~ N(0,I) for generative models vs v_ref=1.0).
+    if v_ref_input is not None:
+        from .analog_conv import AnalogConv1d, AnalogConv2d, AnalogConv3d
+        crossbar_types = (AnalogLinear, AnalogConv1d, AnalogConv2d, AnalogConv3d)
+        for m in analog_model.modules():
+            if isinstance(m, crossbar_types):
+                m.v_ref_input = v_ref_input
+
     return analog_model
 
 

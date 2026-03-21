@@ -94,7 +94,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     model = model.to(_DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     batch_size = 256
-    n_epochs = 400
+    n_epochs = 2000
     model.train()
 
     for epoch in range(n_epochs):
