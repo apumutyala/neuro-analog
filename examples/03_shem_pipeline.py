@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Neural ODE → Shem compiler pipeline.
+Neural ODE — analog degradation sweep + Ark export.
 
 Demonstrates the complete neuro-analog workflow for the Neural ODE family:
   1. Load (or train) the Neural ODE from the cross-arch experiment
   2. Measure analog degradation via mismatch sweep and noise attribution
-  3. Extract the IR: amenability score, D/A boundaries, Shem compiler fit
-  4. Export to a valid Shem/JAX specification for Shem.compile()
+  3. Extract the IR: amenability score, D/A boundaries, Ark compiler fit
+  4. Export to a valid Ark BaseAnalogCkt subclass
 
-neuro-analog's role in the Shem ecosystem:
+neuro-analog's role in the Ark/Shem ecosystem:
   MEASUREMENT   analogize()                  — quantifies the analog gap
-  TRANSLATION   export_neural_ode_to_shem()  — generates valid Shem input
-  VALIDATION    analogize() post-Shem        — measures recovery
+  TRANSLATION   export_neural_ode_to_shem()  — generates Ark-compatible BaseAnalogCkt
+  VALIDATION    run outputs/neural_ode_ark.py — verifies the export against Ark
 
 The Neural ODE (dx/dt = f_θ(x,t)) is the most analog-native architecture:
-  - The model IS an ODE — identical to Shem/Arco/Legno input format
+  - The model IS an ODE — identical to Arco/Legno/Ark input format
   - Only 2 D/A boundaries (1 DAC input + 1 ADC output)
-  - f_θ is a small MLP → fits within demonstrated 128×128 crossbar scale
-  - Adjoint training uses the same math as Shem's gradient computation
+  - f_θ is a small MLP → fits within demonstrated 128x128 crossbar scale
+  - Adjoint training uses the same math as Ark's gradient computation
 
 Usage:
     python examples/03_shem_pipeline.py
@@ -25,7 +25,7 @@ Usage:
     python examples/03_shem_pipeline.py --n-adc-bits 6
 
 Output:
-    outputs/neural_ode_shem.py  — valid Shem input, ready for Shem.compile()
+    outputs/neural_ode_ark.py  — valid Ark BaseAnalogCkt subclass
 """
 
 import argparse
@@ -134,7 +134,7 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
         dynamics_description="dx/dt = f_θ(x, t)  [time-augmented MLP vector field]",
         analog_circuit_primitive="Crossbar MVM + tanh diff pair + RC integrator",
         key_digital_bottleneck="Adaptive step-size controller (digital bookkeeping only)",
-        analog_compiler_fit="Perfect — dx/dt = f_θ(x,t) IS Shem's input format",
+        analog_compiler_fit="Perfect — dx/dt = f_θ(x,t) IS Ark's input format",
     )
 
     counts = count_analog_vs_digital(analogize(model, sigma_mismatch=0.0, n_adc_bits=n_adc_bits))
@@ -144,24 +144,24 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
     print(f"  Analog layers:      {counts['analog_layers']}  "
           f"({counts['coverage_pct']:.0f}% param coverage)")
     print(f"  Digital layers:     {counts['digital_layers']}")
-    print(f"  Shem compiler fit:  PERFECT")
+    print(f"  Ark compiler fit:   PERFECT")
 
-    # ── Step 4: Shem export ────────────────────────────────────────────────────
-    sep("STEP 4 / 4  Shem Export")
+    # ── Step 4: Ark export ─────────────────────────────────────────────────────
+    sep("STEP 4 / 4  Ark Export")
 
-    shem_path = _OUT / "neural_ode_shem.py"
-    code = export_neural_ode_to_shem(extractor, shem_path, mismatch_sigma=sigma)
+    ark_path = _OUT / "neural_ode_ark.py"
+    code = export_neural_ode_to_shem(extractor, ark_path, mismatch_sigma=sigma)
     n_lines = len(code.splitlines())
-    n_trainable = code.count("AnalogTrainable")
-    print(f"  Written:            {shem_path}")
+    n_params = sum(1 for line in code.splitlines() if "a_trainable[" in line)
+    print(f"  Written:            {ark_path}")
     print(f"  Lines:              {n_lines}")
-    print(f"  AnalogTrainable:    {n_trainable} parameters (σ={sigma})")
+    print(f"  Trainable slices:   {n_params}  (mismatch sigma={sigma})")
     print()
 
-    # Print the dynamics method
+    # Print the ode_fn method
     in_fn, shown = False, 0
     for line in code.splitlines():
-        if "def dynamics" in line:
+        if "def ode_fn" in line:
             in_fn = True
         if in_fn:
             print(f"  {line}")
@@ -175,19 +175,17 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
     print("  SUMMARY")
     print(f"    Digital baseline:       {digital_ll:.4f} nats")
     print(f"    5% tolerance threshold: σ ≈ {threshold:.3f}")
-    print(f"    Shem export:            {shem_path}")
+    print(f"    Ark export:             {ark_path}")
     print()
-    print("  NEXT STEP — compile with Shem:")
-    print("    from shem import Shem")
-    print("    from outputs.neural_ode_shem import NeuralODEAnalog")
-    print("    compiled = Shem.compile(NeuralODEAnalog())")
-    print("    grad = compiled.gradient(your_nll_loss)")
+    print("  VERIFY — run the exported file against Ark:")
+    print(f"    python {ark_path}")
     print()
-    print("  After Shem optimization, re-run analogize() to verify recovery.")
+    print("  The generated NeuralODEAnalogCkt is a BaseAnalogCkt subclass.")
+    print("  Ark can compile it to an analog circuit and optimize weights")
+    print("  for mismatch robustness via adjoint-based gradient computation.")
     print()
-    print("  Reference (Achour et al. 2023, Table 2):")
-    print("    CNN at σ=0.10: 93% quality recovery after Shem optimization.")
-    print(f"    Neural ODE has only {profile.da_boundary_count} D/A boundaries vs CNN 6-8 → better recovery expected.")
+    print(f"  Neural ODE has only {profile.da_boundary_count} D/A boundaries vs CNN 6-8")
+    print("  — fewer domain crossings means less quantization loss and better analog fit.")
 
 
 if __name__ == "__main__":
