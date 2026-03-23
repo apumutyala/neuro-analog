@@ -2,14 +2,14 @@
 """
 Evaluate continuous models (SSM, Neural ODE) natively in JAX/Diffrax.
 
-Implements the end-to-end Shem-compatible evaluation workflow:
+Implements the end-to-end Ark evaluation workflow:
 1. Extract the PyTorch model into an ODESystem (neuro-analog IR).
-2. Export the ODE system to a Shem-compatible JAX file (shem_export.py).
-3. Evaluate the generated JAX file natively, as it would run under
-   the Shem compiler or on analog hardware.
+2. Export the ODE system to an Ark-compatible JAX file (ark_export.py).
+3. Evaluate the generated BaseAnalogCkt subclass natively in JAX/Diffrax,
+   as it would run under Ark's adjoint optimizer or on analog hardware.
 
 Usage:
-    python experiments/cross_arch_tolerance/evaluate_in_shem.py --model ssm
+    python experiments/cross_arch_tolerance/evaluate_in_ark.py --model ssm
 """
 
 import argparse
@@ -27,7 +27,8 @@ _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from models import neural_ode, ssm
-from neuro_analog.ir.shem_export import export_ssm_to_shem, export_neural_ode_to_shem
+from neuro_analog.ir.ark_export import export_ssm_to_ark
+from neuro_analog.extractors.neural_ode import export_neural_ode_to_ark
 
 
 def load_generated_module(module_name: str, file_path: Path):
@@ -41,9 +42,9 @@ def load_generated_module(module_name: str, file_path: Path):
     return module
 
 
-def run_shem_evaluation(model_type: str, n_trials: int = 5):
+def run_ark_evaluation(model_type: str, n_trials: int = 5):
     print(f"\n{'='*50}")
-    print(f"Executing Shem-Native Evaluation for: {model_type.upper()}")
+    print(f"Executing Ark-Native Evaluation for: {model_type.upper()}")
     print(f"{'='*50}")
     
     ckpt_dir = _ROOT / "experiments" / "cross_arch_tolerance" / "checkpoints"
@@ -61,23 +62,23 @@ def run_shem_evaluation(model_type: str, n_trials: int = 5):
         from neuro_analog.extractors.ssm import MambaExtractor
         extractor = MambaExtractor.from_module(model, state_dim=16)
         extractor.run()
-        export_fn = export_ssm_to_shem
+        export_fn = export_ssm_to_ark
     elif model_type == "neural_ode":
         model_module = neural_ode
         model = model_module.load_model(str(ckpt_path))
         from neuro_analog.extractors.neural_ode import NeuralODEExtractor
         extractor = NeuralODEExtractor.from_module(model, state_dim=2)
         extractor.run()
-        export_fn = export_neural_ode_to_shem
+        export_fn = export_neural_ode_to_ark
     else:
         raise ValueError(f"Unsupported continuous model: {model_type}")
 
-    # 2. Export to Shem JAX Format
-    print("[2/4] Exporting to Shem (JAX/Diffrax) format...")
-    export_dir = _ROOT / "experiments" / "cross_arch_tolerance" / "shem_exports"
+    # 2. Export to Ark JAX Format
+    print("[2/4] Exporting to Ark (BaseAnalogCkt) format...")
+    export_dir = _ROOT / "experiments" / "cross_arch_tolerance" / "ark_exports"
     export_dir.mkdir(exist_ok=True)
-    
-    export_path = export_dir / f"{model_type}_shem_ckt.py"
+
+    export_path = export_dir / f"{model_type}_ark_ckt.py"
     try:
         export_fn(extractor.graph, extractor=extractor, output_path=export_path, mismatch_sigma=0.05)
     except TypeError:
@@ -88,17 +89,17 @@ def run_shem_evaluation(model_type: str, n_trials: int = 5):
 
     # 3. Load Generated JAX Code
     print("[3/4] Compiling JAX Simulation Environment...")
-    shem_module = load_generated_module(f"{model_type}_shem", export_path)
-    
+    ark_module = load_generated_module(f"{model_type}_ark", export_path)
+
     # Instantiate the circuit class
     if model_type == "ssm":
-        ckt = shem_module.SSMAnalogCkt()
+        ckt = ark_module.SSMAnalogCkt()
         state_dim = extractor.graph._dynamics.state_dimension or 16
     elif model_type == "neural_ode":
-        ckt = shem_module.NeuralODEAnalogCkt()
+        ckt = ark_module.NeuralODEAnalogCkt()
         state_dim = extractor.state_dim
 
-    # 4. Run Evaluation Sweep in JAX (Mimicking Shem Mismatch)
+    # 4. Run Evaluation Sweep in JAX (Ark mismatch sampling)
     print(f"[4/4] Running {n_trials} mismatch trials natively in JAX...")
     
     # We use a dummy input for demonstration (e.g. zeros, or data from test set)
@@ -119,7 +120,7 @@ def run_shem_evaluation(model_type: str, n_trials: int = 5):
         print(f"      Trial {trial+1:02d} | Seed {trial} | Output Norm: {jnp.linalg.norm(out):.6f}")
 
     print(f"      -> {n_trials} trials completed in {time.time() - t0:.3f}s")
-    print("\nSUCCESS: Model successfully bypassed PyTorch discrete simulation and ran purely via JAX/Diffrax!")
+    print("\nSUCCESS: Model exported as Ark BaseAnalogCkt and ran purely via JAX/Diffrax!")
 
 
 if __name__ == "__main__":
@@ -131,4 +132,4 @@ if __name__ == "__main__":
     models_to_run = ["ssm", "neural_ode"] if args.model == "all" else [args.model]
     
     for m in models_to_run:
-        run_shem_evaluation(m, args.n_trials)
+        run_ark_evaluation(m, args.n_trials)

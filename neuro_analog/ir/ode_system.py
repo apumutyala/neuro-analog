@@ -4,13 +4,12 @@ ODESystem: extracted dynamical system ready for analog simulation.
 This is the central data structure that bridges:
   - Extraction (neural_ode.py, ssm.py)  → populates parameters, bounds, dynamics
   - Simulation (analog_ode_solver.py)    → reads parameters, applies mismatch + noise
-  - Export (shem_export.py)              → serializes to JAX/Diffrax code
+  - Export (ark_export.py)               → serializes to JAX/Diffrax code
 
-Aligned with Shem's API (arXiv:2411.03557):
-  - Parameters map to AnalogTrainable instances
-  - Mismatch is multiplicative δ ~ N(1, σ²) per parameter (Shem §4.1)
-  - Transient noise is additive SDE diffusion term g(x,θ,t)·dW (Shem §4.2)
-  - Parameter bounds enforce physical constraints (Shem §4.3)
+Based on the noise/mismatch model described in Wang & Achour (arXiv:2411.03557):
+  - Mismatch is multiplicative δ ~ N(1, σ²) per parameter (§4.1)
+  - Transient noise is additive SDE diffusion term g(x,θ,t)·dW (§4.2)
+  - Parameter bounds enforce physical constraints (§4.3)
   - Readout times specify when cost is evaluated along the trajectory
 
 Unlike AnalogGraph (which catalogs operations as nodes), ODESystem represents
@@ -32,17 +31,17 @@ import torch.nn as nn
 class ParameterSpec:
     """Specification for one parameter in the dynamical system.
 
-    Maps to Shem's AnalogTrainable + mismatch decorator:
-        param = mismatch(AnalogTrainable(init=value), sigma=mismatch_sigma)
+    Maps to Ark's Trainable (via TrainableMgr.new_analog) and AttrDefMismatch
+    when mismatch_sigma > 0 (see neuro_analog.ark_bridge).
 
     Attributes:
         name: Human-readable name (e.g., "f_theta.W0", "ssm.A_diag").
         value: Nominal parameter tensor (extracted from pretrained model).
         bounds: Physical bounds (lo, hi). None = unbounded.
-                Shem §4.3: parameters clipped to feasible range.
+                Parameters clipped to feasible range (Wang & Achour §4.3).
         mismatch_sigma: Per-parameter mismatch σ. δ ~ N(1, σ²).
                         0.0 = ideal (no fabrication variation).
-        trainable: Whether Shem should optimize this parameter.
+        trainable: Whether to include in Ark's TrainableMgr.
                    True for all weights; False for fixed hardware constants.
         analog_primitive: What this maps to in hardware
                           (e.g., "crossbar_conductance", "RC_time_constant").
@@ -59,7 +58,7 @@ class ParameterSpec:
 class NoiseProfile:
     """Transient noise specification for the SDE diffusion term.
 
-    Shem §4.2: dx = f(x,θ,t)dt + g(x,θ,t)·dW
+    Wang & Achour §4.2: dx = f(x,θ,t)dt + g(x,θ,t)·dW
     The noise amplitude g can be state-dependent or constant.
 
     For analog hardware:
@@ -104,8 +103,8 @@ class ODESystem:
         perturbed = ode_sys.sample_mismatch(sigma=0.05)
         trajectory = analog_odeint(perturbed.dynamics_fn, y0, t_span, ...)
 
-        # Export to Shem-compatible JAX
-        export_ode_system_to_shem(ode_sys, "output.py")
+        # Export to Ark-compatible JAX
+        export_neural_ode_to_ark(ode_sys, "output.py")
 
     Attributes:
         name: Model name for identification.
@@ -117,7 +116,7 @@ class ODESystem:
         dynamics_module: The nn.Module implementing f(t, x).
                          Kept for weight access and analogize() compatibility.
         readout_times: Time points where cost/output is evaluated.
-                       Shem convention: cost is defined over trajectory at these t's.
+                       Cost is defined over trajectory at these t's (matches Ark's saveat).
         t_span: Integration interval (t0, t1).
         noise: Transient noise profile for SDE simulation.
         metadata: Extra info (stiffness, NFE, architecture details).
@@ -146,13 +145,13 @@ class ODESystem:
     def sample_mismatch(self, sigma: Optional[float] = None) -> ODESystem:
         """Return a new ODESystem with mismatch applied to all parameters.
 
-        Mismatch model (Shem §4.1):
+        Mismatch model (Wang & Achour arXiv:2411.03557 §4.1):
             θ' = δ ⊙ θ,  δ ~ N(1, σ²·I)
 
         Each parameter gets an independent multiplicative perturbation.
         If sigma is provided, it overrides per-parameter mismatch_sigma.
 
-        After mismatch, parameters are clamped to their bounds (Shem §4.3).
+        After mismatch, parameters are clamped to their bounds (§4.3).
 
         Returns a new ODESystem with perturbed parameter values and an updated
         dynamics_module whose weights reflect the mismatch.
@@ -178,7 +177,7 @@ class ODESystem:
             else:
                 new_value = pspec.value.clone()
 
-            # Enforce physical bounds (Shem §4.3)
+            # Enforce physical bounds (§4.3)
             if pspec.bounds is not None:
                 lo, hi = pspec.bounds
                 new_value = torch.clamp(new_value, lo, hi)

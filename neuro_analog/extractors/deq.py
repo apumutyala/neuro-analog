@@ -16,10 +16,10 @@ Critical stability condition:
   Under mismatch, even a nominally stable DEQ can have ρ ≥ 1 and diverge.
   This is the DEQ's key analog insight — quantified by extract_spectral_radius().
 
-DEQ → Shem mapping:
+DEQ → Ark mapping:
   z* = f_θ(z*, x) ↔ dz/dt = f_θ(z, x) - z  [gradient flow to fixed point]
   At equilibrium: dz/dt = 0 → z* = f_θ(z*, x) ✓
-  This ODE form is expressible in Arco/Legno, and Shem can optimize θ for
+  This ODE form is native Arco/Legno format, and Ark can optimize θ for
   mismatch-robust convergence (pushing ρ further below 1).
 
 Reference: Bai et al. 2019, "Deep Equilibrium Models" (NeurIPS 2019).

@@ -8,9 +8,9 @@ Demonstrates the complete neuro-analog workflow for the Neural ODE family:
   3. Extract the IR: amenability score, D/A boundaries, Ark compiler fit
   4. Export to a valid Ark BaseAnalogCkt subclass
 
-neuro-analog's role in the Ark/Shem ecosystem:
-  MEASUREMENT   analogize()                  — quantifies the analog gap
-  TRANSLATION   export_neural_ode_to_shem()  — generates Ark-compatible BaseAnalogCkt
+neuro-analog's role in the Ark ecosystem:
+  MEASUREMENT   analogize()                 — quantifies the analog gap
+  TRANSLATION   export_neural_ode_to_ark()  — generates Ark-compatible BaseAnalogCkt
   VALIDATION    run outputs/neural_ode_ark.py — verifies the export against Ark
 
 The Neural ODE (dx/dt = f_θ(x,t)) is the most analog-native architecture:
@@ -20,9 +20,9 @@ The Neural ODE (dx/dt = f_θ(x,t)) is the most analog-native architecture:
   - Adjoint training uses the same math as Ark's gradient computation
 
 Usage:
-    python examples/03_shem_pipeline.py
-    python examples/03_shem_pipeline.py --sigma 0.07 --n-trials 15
-    python examples/03_shem_pipeline.py --n-adc-bits 6
+    python examples/03_ark_pipeline.py
+    python examples/03_ark_pipeline.py --sigma 0.07 --n-trials 15
+    python examples/03_ark_pipeline.py --n-adc-bits 6
 
 Output:
     outputs/neural_ode_ark.py  — valid Ark BaseAnalogCkt subclass
@@ -45,7 +45,7 @@ from neuro_analog.simulator import (
     ablation_sweep,
     count_analog_vs_digital,
 )
-from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_shem
+from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_ark
 from neuro_analog.analysis.taxonomy import AnalogTaxonomy
 from models import neural_ode as neural_ode_module
 
@@ -150,7 +150,7 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
     sep("STEP 4 / 4  Ark Export")
 
     ark_path = _OUT / "neural_ode_ark.py"
-    code = export_neural_ode_to_shem(extractor, ark_path, mismatch_sigma=sigma)
+    code = export_neural_ode_to_ark(extractor, ark_path, mismatch_sigma=sigma)
     n_lines = len(code.splitlines())
     n_params = sum(1 for line in code.splitlines() if "a_trainable[" in line)
     print(f"  Written:            {ark_path}")

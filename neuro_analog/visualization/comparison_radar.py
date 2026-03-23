@@ -5,9 +5,9 @@ Axes:
   1. Analog FLOP %          — more = better (weights on physics)
   2. D/A boundary score     — fewer boundaries = better (inverted count)
   3. Precision tolerance     — lower bits needed = better
-  4. Dynamics naturalness    — ODE/SDE fit to Arco/Legno/Shem
+  4. Dynamics naturalness    — ODE/SDE fit to Ark (Arco/Legno)
   5. Mismatch resilience     — from propagate_mismatch() analysis
-  6. Shem compatibility      — can we generate a valid Shem input today?
+  6. Ark compatibility       — can we generate a valid BaseAnalogCkt subclass today?
 """
 
 from __future__ import annotations
@@ -48,14 +48,14 @@ AXES = [
     "Precision\nTolerance",
     "Dynamics\nNaturalness",
     "Mismatch\nResilience",
-    "Shem\nCompatibility",
+    "Ark\nCompatibility",
 ]
 
 
 def _compute_radar_scores(
     profile: AnalogAmenabilityProfile,
     mismatch_resilience: float = 0.5,
-    shem_compat: float = 0.5,
+    ark_compat: float = 0.5,
 ) -> list[float]:
     """Convert an AnalogAmenabilityProfile to a 6-axis radar score vector (all in [0,1])."""
 
@@ -75,10 +75,10 @@ def _compute_radar_scores(
     # Axis 5: Mismatch resilience (externally provided — from propagate_mismatch())
     mismatch_score = max(0.0, min(1.0, mismatch_resilience))
 
-    # Axis 6: Shem compatibility (externally provided — 1.0 = direct input, 0.0 = not applicable)
-    shem_score = max(0.0, min(1.0, shem_compat))
+    # Axis 6: Ark compatibility (externally provided — 1.0 = valid BaseAnalogCkt today, 0.0 = not applicable)
+    ark_score = max(0.0, min(1.0, ark_compat))
 
-    return [analog_frac, boundary_score, precision_score, dynamics_score, mismatch_score, shem_score]
+    return [analog_frac, boundary_score, precision_score, dynamics_score, mismatch_score, ark_score]
 
 
 def plot_radar(
@@ -90,9 +90,9 @@ def plot_radar(
     """Generate a six-axis radar chart.
 
     Args:
-        profiles: List of (profile, mismatch_resilience, shem_compat) tuples.
+        profiles: List of (profile, mismatch_resilience, ark_compat) tuples.
                   mismatch_resilience: 0-1 score from mismatch analysis.
-                  shem_compat: 0-1 score (1.0 = valid Shem input today).
+                  ark_compat: 0-1 score (1.0 = valid BaseAnalogCkt subclass today).
         output_path: If provided, save PNG to this path.
         figsize: Figure dimensions.
         title: Chart title.
@@ -118,8 +118,8 @@ def plot_radar(
     ax.spines["polar"].set_color("#444")
 
     # Plot each architecture
-    for profile, mismatch_r, shem_c in profiles:
-        scores = _compute_radar_scores(profile, mismatch_r, shem_c)
+    for profile, mismatch_r, ark_c in profiles:
+        scores = _compute_radar_scores(profile, mismatch_r, ark_c)
         scores += scores[:1]  # close polygon
         color = _ARCH_COLORS.get(profile.architecture, "#aaa")
         name = _ARCH_NAMES.get(profile.architecture, profile.architecture.value)
@@ -159,13 +159,13 @@ def plot_radar(
 def plot_radar_from_taxonomy(
     taxonomy,
     mismatch_scores: Optional[dict[str, float]] = None,
-    shem_scores: Optional[dict[str, float]] = None,
+    ark_scores: Optional[dict[str, float]] = None,
     output_path: Optional[str | Path] = None,
 ) -> plt.Figure:
     """Convenience wrapper: build radar from an AnalogTaxonomy object."""
-    # Default Shem compatibility by architecture
-    default_shem = {
-        ArchitectureFamily.NEURAL_ODE: 1.0,   # Direct Shem input
+    # Default Ark compatibility by architecture (1.0 = valid BaseAnalogCkt today)
+    default_ark = {
+        ArchitectureFamily.NEURAL_ODE: 1.0,   # Direct Ark input via export_neural_ode_to_ark
         ArchitectureFamily.SSM: 0.75,          # ODE form; scale challenge
         ArchitectureFamily.EBM: 0.4,           # Energy, not ODE
         ArchitectureFamily.FLOW: 0.7,          # ODE form; v_θ scale challenge
@@ -184,7 +184,7 @@ def plot_radar_from_taxonomy(
     profiles_input = []
     for entry in taxonomy.entries:
         mr = (mismatch_scores or {}).get(entry.model_name, default_mismatch.get(entry.family, 0.5))
-        sc = (shem_scores or {}).get(entry.model_name, default_shem.get(entry.family, 0.5))
+        sc = (ark_scores or {}).get(entry.model_name, default_ark.get(entry.family, 0.5))
         profiles_input.append((entry.profile, mr, sc))
 
     return plot_radar(profiles_input, output_path=output_path)
