@@ -2,7 +2,7 @@
 Unified execution pipeline for cross-architecture analog tolerance profiling.
 
 Extracts hardware-specific ODE configurations (for Neural ODE/SSMs) or graph-level constraints
-(for others), runs mismatch and ablation sweeps, and emits Shem-compatible JAX configurations.
+(for others), runs mismatch and ablation sweeps, and emits Ark-compatible JAX configurations.
 """
 
 import os
@@ -21,7 +21,7 @@ class PipelineResult:
     graph: Optional[AnalogGraph]
     ode_system: Optional[ODESystem]
     sweep_results: dict[str, Any]
-    shem_export_path: Optional[str]
+    ark_export_path: Optional[str]
 
 
 def run_pipeline(
@@ -68,17 +68,17 @@ def run_pipeline(
     
     sweep_results = {"mismatch": mismatch_res.to_dict()}
     
-    # 3. Shem Export
-    print("[3/3] Exporting to Shem JAX representation...")
-    shem_path = None
+    # 3. Ark Export
+    print("[3/3] Exporting to Ark (BaseAnalogCkt) JAX representation...")
+    ark_path = None
     if family == "neural_ode":
-        from neuro_analog.ir.shem_export import export_neural_ode_to_shem
-        shem_path = str(output_path / f"{model_name}_shem.py")
-        export_neural_ode_to_shem(extractor, shem_path, mismatch_sigma=0.05)
+        from neuro_analog.extractors.neural_ode import export_neural_ode_to_ark
+        ark_path = str(output_path / f"{model_name}_ark.py")
+        export_neural_ode_to_ark(extractor, ark_path, mismatch_sigma=0.05)
     elif family == "ssm":
-        from neuro_analog.ir.shem_export import export_ssm_to_shem
-        shem_path = str(output_path / f"{model_name}_shem.py")
-        export_ssm_to_shem(graph, extractor, shem_path, mismatch_sigma=0.05)
+        from neuro_analog.ir.ark_export import export_ssm_to_ark
+        ark_path = str(output_path / f"{model_name}_ark.py")
+        export_ssm_to_ark(graph, extractor, ark_path, mismatch_sigma=0.05)
 
     print(f"--- PIPELINE DONE ---")
     return PipelineResult(
@@ -87,5 +87,5 @@ def run_pipeline(
         graph=graph,
         ode_system=ode_system,
         sweep_results=sweep_results,
-        shem_export_path=shem_path
+        ark_export_path=ark_path
     )

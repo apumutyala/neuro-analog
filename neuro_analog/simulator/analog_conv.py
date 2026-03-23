@@ -24,7 +24,7 @@ Physical model — identical to AnalogLinear, applied to the convolution weight 
    Same uniform quantizer as AnalogLinear, applied to the convolution output.
 
 References:
-  Shem §4.1-4.3 (mismatch, thermal, quantization).
+  Wang & Achour (arXiv:2411.03557) §4.1-4.3 (mismatch, thermal, quantization).
   Legno §4 (sqrt(N) thermal noise model for summed column currents).
 """
 

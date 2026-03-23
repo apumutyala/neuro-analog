@@ -2,16 +2,6 @@
 outputs/
 *.zip
 
-# Local working notes (never push to remote)
-notes/
-GUIDE.md
-QUIZ.md
-Apuroop_Mutyala_resume.pdf
-make_zip.py
-create_colab_zip.py
-
-experiments/cross_arch_tolerance/TECHNICAL_NOTE.md
-
 # Python
 __pycache__/
 *.py[cod]
@@ -42,7 +32,3 @@ Thumbs.db
 
 # Data / checkpoints (large files, reproduce via scripts)
 experiments/*/data/
-.claude/
-
-# Research PDFs (do not commit)
-*.pdf

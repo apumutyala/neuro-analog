@@ -2,14 +2,14 @@
 Neural ODE / CDE extractor — highest analog amenability of all supported families.
 
 Why Neural ODEs map cleanly to analog hardware:
-  - The model IS an ODE: dx/dt = f_θ(x, t)  →  identical to Arco/Legno/Shem input format
-  - Training uses adjoint equations            →  same math as Shem's gradient computation
+  - The model IS an ODE: dx/dt = f_θ(x, t)  →  identical to Ark (Arco/Legno) input format
+  - Training uses adjoint equations            →  same math as Ark's gradient computation
   - f_θ is a small MLP (64–256 dim)           →  within demonstrated analog parameter scale
   - Adaptive solver → analog integrator       →  direct substrate mapping
 
-The Shem export for Neural ODEs is complete (not a structural stub) — weights are
-extracted from the pretrained model and the generated JAX code runs as a valid
-Shem-compatible ODE specification.
+The Ark export for Neural ODEs is complete (not a structural stub) — weights are
+extracted from the pretrained model and the generated JAX code is a valid
+Ark BaseAnalogCkt subclass.
 
 Supported models:
   - torchdiffeq-based NeuralODE (Chen et al. 2018, NeurIPS)
@@ -220,9 +220,9 @@ class NeuralODEExtractor(BaseExtractor):
     3. Named demo model (for testing without pretrained checkpoints):
         extractor = NeuralODEExtractor.demo(state_dim=2, hidden_dim=64)
 
-    The Shem export produced by export_neural_ode_to_shem() is complete —
+    The Ark export produced by export_neural_ode_to_ark() is complete —
     weights are extracted from the pretrained model and the generated JAX code
-    is a valid Shem ODE specification supporting adjoint-based optimization.
+    is a valid Ark BaseAnalogCkt subclass supporting adjoint-based optimization.
     """
 
     def __init__(
@@ -265,7 +265,7 @@ class NeuralODEExtractor(BaseExtractor):
         """Build a small demo Neural ODE for testing without a pretrained checkpoint.
 
         Produces a valid extractor that exercises the full pipeline including
-        the Shem export, mismatch propagation, and noise budget.
+        the Ark export, mismatch propagation, and noise budget.
         """
         act_map = {
             "tanh": nn.Tanh,
@@ -647,7 +647,7 @@ class NeuralODEExtractor(BaseExtractor):
         Each weight tensor becomes a ParameterSpec with:
           - Bounds based on weight distribution (±3σ from mean as physical range)
           - analog_primitive = "crossbar_conductance" for weights
-          - trainable = True (Shem should optimize all weights)
+          - trainable = True (Ark TrainableMgr includes all weights)
 
         The dynamics_module is f_θ itself, and dynamics_fn = f_θ.forward.
         """
@@ -712,16 +712,16 @@ class NeuralODEExtractor(BaseExtractor):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Shem export for Neural ODEs
+# Ark export for Neural ODEs
 # ──────────────────────────────────────────────────────────────────────
 
-def export_neural_ode_to_shem(
+def export_neural_ode_to_ark(
     extractor,
     output_path,
     mismatch_sigma: float = 0.05,
 ) -> str:
-    """Generate a Shem-compatible JAX class from a NeuralODEExtractor.
-    Complies with BaseAnalogCkt interface with full param flattening.
+    """Generate an Ark-compatible BaseAnalogCkt subclass from a NeuralODEExtractor.
+    Full parameter flattening with static offsets for Ark's OptCompiler format.
     """
     import torch.nn as nn
     from pathlib import Path
@@ -892,7 +892,7 @@ def export_neural_ode_to_shem(
     Path(output_path).write_text(code, encoding="utf-8")
     try:
         from loguru import logger as log
-        log.info(f"Shem export written to {output_path} ({len(code)} chars)")
+        log.info(f"Ark export written to {output_path} ({len(code)} chars)")
     except ImportError:
         pass
     return code

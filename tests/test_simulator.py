@@ -233,6 +233,60 @@ class TestAnalogize:
         assert y_d.shape == y_a.shape
 
 
+# ── Test 7b: analogize() with Conv2d and MultiheadAttention ──────────────
+
+class TestAnalogizeConvAndMHA:
+    def test_conv2d_replaced_with_analog_conv(self):
+        """nn.Conv2d → AnalogConv2d after analogize()."""
+        from neuro_analog.simulator.analog_conv import AnalogConv2d
+        model = nn.Sequential(nn.Conv2d(1, 4, kernel_size=3, padding=1), nn.ReLU())
+        analog = analogize(model, sigma_mismatch=0.05)
+        conv_layers = [m for m in analog.modules() if isinstance(m, AnalogConv2d)]
+        assert len(conv_layers) == 1
+
+    def test_conv2d_output_shape_preserved(self):
+        """AnalogConv2d output spatial shape matches nn.Conv2d."""
+        model = nn.Sequential(nn.Conv2d(1, 4, kernel_size=3, padding=1))
+        analog = analogize(model, sigma_mismatch=0.05)
+        x = torch.randn(2, 1, 8, 8)
+        with torch.no_grad():
+            assert model(x).shape == analog(x).shape
+
+    def test_mha_replaced_with_analog_mha(self):
+        """nn.MultiheadAttention → AnalogMultiheadAttention after analogize().
+        Must be a child module — wrap in Sequential so _replace_recursive sees it."""
+        from neuro_analog.simulator.analog_attention import AnalogMultiheadAttention
+
+        class _Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attn = nn.MultiheadAttention(embed_dim=16, num_heads=4, batch_first=True)
+            def forward(self, x):
+                out, _ = self.attn(x, x, x)
+                return out
+
+        model = _Block()
+        analog = analogize(model, sigma_mismatch=0.05)
+        mha_layers = [m for m in analog.modules() if isinstance(m, AnalogMultiheadAttention)]
+        assert len(mha_layers) == 1
+
+    def test_mha_output_shape_preserved(self):
+        """AnalogMultiheadAttention output shape matches nn.MultiheadAttention."""
+        class _Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attn = nn.MultiheadAttention(embed_dim=16, num_heads=4, batch_first=True)
+            def forward(self, x):
+                out, _ = self.attn(x, x, x)
+                return out
+
+        model = _Block()
+        analog = analogize(model, sigma_mismatch=0.05)
+        x = torch.randn(2, 5, 16)   # (batch, seq, embed)
+        with torch.no_grad():
+            assert model(x).shape == analog(x).shape
+
+
 # ── Test 8: count_analog_vs_digital ──────────────────────────────────────
 
 class TestCountAnalogDigital:

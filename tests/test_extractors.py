@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from neuro_analog.ir.types import ArchitectureFamily, Domain, OpType
 from neuro_analog.ir.graph import AnalogGraph
-from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_shem
+from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_ark
 from neuro_analog.extractors.ebm import EBMExtractor, EBMConfig
 from neuro_analog.extractors.transformer import TransformerExtractor
 
@@ -80,59 +80,55 @@ class TestNeuralODEExtractor:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Shem export
+# Ark export
 # ──────────────────────────────────────────────────────────────────────
 
-class TestShemExport:
+class TestArkExport:
     def test_neural_ode_export_syntactically_valid(self, tmp_path):
-        """Generated Shem code must parse as valid Python."""
+        """Generated Ark code must parse as valid Python."""
         import ast
         ext = NeuralODEExtractor.demo(state_dim=2, hidden_dim=32, num_layers=2)
         ext.load_model()
         ext.build_graph()
-        output = tmp_path / "neural_ode_shem.py"
-        code = export_neural_ode_to_shem(ext, output_path=output)
+        output = tmp_path / "neural_ode_ark.py"
+        code = export_neural_ode_to_ark(ext, output_path=output)
         # Must be valid Python
         ast.parse(code)
 
     def test_neural_ode_export_has_mismatch(self, tmp_path):
-        """All AnalogTrainable params must be wrapped with mismatch()."""
+        """Generated code must apply multiplicative mismatch (δ ~ N(1, σ²)) to weights."""
         ext = NeuralODEExtractor.demo(state_dim=2, hidden_dim=16, num_layers=2)
         ext.load_model()
         ext.build_graph()
         output = tmp_path / "out.py"
-        code = export_neural_ode_to_shem(ext, output_path=output, mismatch_sigma=0.05)
-        assert "mismatch(" in code
-        assert "AnalogTrainable(" in code
-        # Every AnalogTrainable must be inside mismatch()
-        # Simple check: count occurrences
-        n_trainable = code.count("AnalogTrainable(")
-        n_mismatch = code.count("mismatch(")
-        assert n_mismatch >= n_trainable
+        code = export_neural_ode_to_ark(ext, output_path=output, mismatch_sigma=0.05)
+        # Generated code applies mismatch as: param * (1.0 + sigma * jrandom.normal(...))
+        assert "jrandom.normal" in code
+        assert "sigma" in code
 
     def test_neural_ode_export_has_diffrax(self, tmp_path):
-        """Export must import and use Diffrax for ODE solving."""
+        """Export embeds a diffrax solver in __init__ (Ark runtime calls it via BaseAnalogCkt)."""
         ext = NeuralODEExtractor.demo(state_dim=2, hidden_dim=16)
         ext.load_model()
         ext.build_graph()
         output = tmp_path / "out.py"
-        code = export_neural_ode_to_shem(ext, output_path=output)
+        code = export_neural_ode_to_ark(ext, output_path=output)
         assert "import diffrax" in code
-        assert "diffrax.diffeqsolve" in code
+        assert "solver=diffrax." in code   # e.g. solver=diffrax.Heun()
 
-    def test_neural_ode_export_has_readout_time(self, tmp_path):
-        """Export must specify readout_time (Shem cost evaluation point)."""
+    def test_neural_ode_export_has_saveat(self, tmp_path):
+        """Export must use TimeInfo with saveat (Ark's ODE time specification)."""
         ext = NeuralODEExtractor.demo(state_dim=2, hidden_dim=16, t_span=(0.0, 2.0))
         ext.load_model()
         ext.build_graph()
         output = tmp_path / "out.py"
-        code = export_neural_ode_to_shem(ext, output_path=output)
-        assert "readout_time" in code
+        code = export_neural_ode_to_ark(ext, output_path=output)
+        assert "saveat" in code
         assert "2.0" in code  # t_end = 2.0
 
     def test_ssm_export_syntactically_valid(self, tmp_path):
         import ast
-        from neuro_analog.ir.shem_export import export_ssm_to_shem
+        from neuro_analog.ir.ark_export import export_ssm_to_ark
         from neuro_analog.ir.types import DynamicsProfile
         g = AnalogGraph("test_ssm", ArchitectureFamily.SSM)
         g.set_dynamics(DynamicsProfile(
@@ -142,23 +138,23 @@ class TestShemExport:
             time_constant_spread=10.0,
             state_dimension=4,
         ))
-        output = tmp_path / "ssm_shem.py"
-        code = export_ssm_to_shem(g, output)
+        output = tmp_path / "ssm_ark.py"
+        code = export_ssm_to_ark(g, None, output)  # extractor=None → B/C fall back to jnp.ones
         ast.parse(code)
-        assert "mismatch(" in code
+        assert "jrandom.normal" in code
         assert "diffrax" in code
 
     def test_flow_export_has_diffrax(self, tmp_path):
         import ast
-        from neuro_analog.ir.shem_export import export_flow_to_shem
+        from neuro_analog.ir.ark_export import export_flow_to_ark
         from neuro_analog.ir.types import DynamicsProfile
         g = AnalogGraph("flux_test", ArchitectureFamily.FLOW)
         g.set_dynamics(DynamicsProfile(
             has_dynamics=True, dynamics_type="time_varying_ODE",
             num_function_evaluations=4,
         ))
-        output = tmp_path / "flow_shem.py"
-        code = export_flow_to_shem(g, output)
+        output = tmp_path / "flow_ark.py"
+        code = export_flow_to_ark(g, output)
         ast.parse(code)
         assert "diffrax" in code
 
@@ -239,13 +235,68 @@ class TestTransformerExtractor:
         assert len(softmax_fvp) == 0
         assert len(kernel_fvp) > 0
 
-    def test_favor_plus_higher_analog_fraction(self):
-        """FAVOR+ should raise analog fraction vs standard attention."""
+    def test_favor_plus_fewer_da_boundaries(self):
+        """FAVOR+ linear attention avoids the softmax D/A crossing — fewer or equal boundaries."""
         ext_std = TransformerExtractor.reference(dim=256, n_layers=4, use_favor_plus=False)
         ext_fvp = TransformerExtractor.reference(dim=256, n_layers=4, use_favor_plus=True)
-        profile_std = ext_std._graph.analyze()
-        profile_fvp = ext_fvp._graph.analyze()
-        assert profile_fvp.analog_flop_fraction >= profile_std.analog_flop_fraction
+        b_std = len(ext_std._graph.find_da_boundaries())
+        b_fvp = len(ext_fvp._graph.find_da_boundaries())
+        assert b_fvp <= b_std, (
+            f"FAVOR+ should have <= D/A boundaries vs standard attention "
+            f"({b_fvp} vs {b_std})"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DEQ extractor
+# ──────────────────────────────────────────────────────────────────────
+
+class TestDEQExtractor:
+    """DEQExtractor.reference() requires no model download — load_model() is a no-op."""
+
+    def _make(self, z_dim=16, x_dim=16, hidden_dim=32):
+        from neuro_analog.extractors.deq import DEQExtractor
+        ext = DEQExtractor.reference(z_dim=z_dim, x_dim=x_dim, hidden_dim=hidden_dim)
+        ext.load_model()
+        return ext
+
+    def test_reference_builds_graph(self):
+        graph = self._make().build_graph()
+        assert graph.node_count > 0
+        assert graph.family == ArchitectureFamily.DEQ
+
+    def test_graph_has_three_mvm_nodes(self):
+        """W_z + W_x + W_out = exactly 3 MVM crossbars."""
+        graph = self._make().build_graph()
+        mvm_nodes = [n for n in graph.nodes if n.op_type == OpType.MVM]
+        assert len(mvm_nodes) == 3
+
+    def test_graph_has_feedback_integration_node(self):
+        """Analog feedback path is modelled as an INTEGRATION node (state holder)."""
+        graph = self._make().build_graph()
+        int_nodes = [n for n in graph.nodes if n.op_type == OpType.INTEGRATION]
+        assert len(int_nodes) == 1, f"Expected 1 integration node, got {len(int_nodes)}"
+
+    def test_graph_has_da_boundaries(self):
+        """Input DAC + output ADC — feedback loop itself is purely analog."""
+        graph = self._make().build_graph()
+        boundaries = graph.find_da_boundaries()
+        assert len(boundaries) >= 1
+
+    def test_dynamics_implicit_equilibrium(self):
+        ext = self._make()
+        dyn = ext.extract_dynamics()
+        assert dyn.has_dynamics is True
+        assert dyn.dynamics_type == "implicit_equilibrium"
+        assert dyn.is_stochastic is False
+        assert dyn.state_dimension == 16
+
+    def test_run_returns_profile(self):
+        from neuro_analog.extractors.deq import DEQExtractor
+        ext = DEQExtractor.reference(z_dim=16, x_dim=16, hidden_dim=32)
+        profile = ext.run()
+        assert 0.0 <= profile.analog_flop_fraction <= 1.0
+        assert profile.architecture == ArchitectureFamily.DEQ
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -270,7 +321,7 @@ class TestMambaEdges:
                 super().__init__()
                 self.config = FakeConfig()
 
-            def named_parameters(self):
+            def named_parameters(self, recurse=True):
                 return []
 
         ext = MambaExtractor.__new__(MambaExtractor)

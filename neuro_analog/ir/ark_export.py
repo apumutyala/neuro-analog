@@ -1,21 +1,21 @@
 """
-Export AnalogGraph to Shem-compatible JAX ODE specifications.
+Export AnalogGraph to Ark-compatible JAX ODE specifications.
 
-Generates JAX/Diffrax code from extracted AnalogGraphs, following the
-Shem compiler's ODE specification format.
+Two export tiers:
 
-Actual Shem API (from paper — not approximated):
-  - AnalogTrainable(init=val)          marks parameter as optimizable
-  - mismatch(param, sigma=0.1)         multiplicative δ ~ N(1,σ²) perturbation
-  - Shem.compile(model)                produces differentiable simulation
-  - model.diffeq_solve(seed=...)       forward solve with sampled mismatch
-  - model.gradient(loss)              adjoint-based gradient computation
+  Runnable BaseAnalogCkt subclasses (Neural ODE, SSM, DEQ):
+    These architectures have a fixed-size ODE state vector that maps cleanly
+    to Ark's BaseAnalogCkt interface.  The generated files are valid Ark
+    modules that can be run and retrained via Ark's adjoint optimizer.
 
-Shem uses Diffrax internally. All our exports use Diffrax for ODE solving
-so the generated code is immediately composable with Shem's infrastructure.
+  Analysis-only documents (Flow, Diffusion):
+    These architectures have score/velocity networks too large to express as
+    a fixed CDG.  Generated files document the analog/digital boundary and
+    circuit mapping for co-design purposes — they are plain Python classes,
+    NOT BaseAnalogCkt subclasses and NOT runnable Ark code.
 
-Readout times follow Shem's convention — cost functions are evaluated at
-specific time points along the ODE trajectory, not over the full integral.
+For CDG-based compilation (preferred for Neural ODE), see:
+    neuro_analog.ark_bridge.neural_ode_cdg
 """
 
 from __future__ import annotations
@@ -33,30 +33,28 @@ from .node import AnalogNode
 # Shared helpers
 # ──────────────────────────────────────────────────────────────────────
 
-def _header(model_name: str, arch: str, notes: list[str] | None = None) -> list[str]:
-    """Standard file header block."""
-    extra = "\n".join(f"# {n}" for n in (notes or []))
+def _analysis_header(model_name: str, arch: str, notes: list[str] | None = None) -> list[str]:
+    """Header for analysis-only exports (flow, diffusion) — not runnable Ark code."""
+    note_lines = [f"#   {n}" for n in (notes or [])]
     return [
         f'"""',
-        f"Auto-generated Shem ODE specification — neuro-analog.",
+        f"Analog hardware analysis — neuro-analog.  NOT a runnable Ark module.",
         f"Model      : {model_name}",
         f"Architecture: {arch}",
         f"",
-        f"Usage:",
-        f"    from shem import Shem",
-        f"    model = <ClassName>()",
-        f"    compiled = Shem.compile(model)",
-        f"    sol = compiled.diffeq_solve(mismatch_sample_seed=42)",
-        f"    grad = compiled.gradient(your_loss)",
+        f"Flow and diffusion architectures cannot be expressed as BaseAnalogCkt",
+        f"subclasses: their score/velocity networks are 10B+ parameter transformers",
+        f"with no fixed-size ODE state vector.  This file documents the analog/digital",
+        f"partition, circuit mapping, and D/A boundary analysis for use in co-design.",
+        f"",
+        f"For architectures that DO map to BaseAnalogCkt (Neural ODE, SSM, DEQ),",
+        f"see neuro_analog.extractors and neuro_analog.ark_bridge.",
         f'"""',
         f"",
-        f"import jax",
         f"import jax.numpy as jnp",
         f"import diffrax",
-        f"from ark.optimization.base_module import BaseAnalogCkt",
-        f"from shem import AnalogTrainable, mismatch, Shem",
         f"",
-    ]
+    ] + note_lines + ([""] if note_lines else [])
 
 
 def _mismatch_sigma_from_node(node: AnalogNode, default: float = 0.05) -> float:
@@ -78,41 +76,11 @@ def _noise_comment(node: AnalogNode) -> str:
     )
 
 
-def _diffrax_solve_block(
-    t0: float,
-    t1: float,
-    readout_times: list[float],
-    dt0: float = 0.01,
-    solver: str = "Tsit5",
-) -> list[str]:
-    """Generate a Diffrax solve block — the same solver Shem uses internally."""
-    ts_str = str(readout_times)
-    return [
-        f"    def __call__(self, y0: jnp.ndarray) -> jnp.ndarray:",
-        f'        """Integrate ODE using Diffrax (Shem\'s internal solver).',
-        f"",
-        f"        Solver: {solver} (Runge-Kutta 4/5 with error control).",
-        f"        Readout times: {readout_times}",
-        f"        For Shem: cost is evaluated at these time points.",
-        f'        """',
-        f"        term = diffrax.ODETerm(self.dynamics)",
-        f"        solver = diffrax.{solver}()",
-        f"        saveat = diffrax.SaveAt(ts=jnp.array({ts_str}))",
-        f"        sol = diffrax.diffeqsolve(",
-        f"            term, solver,",
-        f"            t0={t0}, t1={t1}, dt0={dt0},",
-        f"            y0=y0, saveat=saveat,",
-        f"        )",
-        f"        return sol.ys  # shape: (len(readout_times), state_dim)",
-        f"",
-    ]
-
-
 # ──────────────────────────────────────────────────────────────────────
 # SSM export
 # ──────────────────────────────────────────────────────────────────────
 
-def export_ssm_to_shem(
+def export_ssm_to_ark(
     graph: AnalogGraph,
     extractor,
     output_path: Path | str,
@@ -227,101 +195,63 @@ def export_ssm_to_shem(
 # Flow model export
 # ──────────────────────────────────────────────────────────────────────
 
-def export_flow_to_shem(
+def export_flow_to_ark(
     graph: AnalogGraph,
     output_path: Path | str,
     mismatch_sigma: float = 0.05,
     nfe: int = 4,
 ) -> str:
-    """Export flow model ODE to Shem-compatible JAX code.
+    """Export flow model analog/digital partition as an analysis document.
 
-    Flow matching: dx/dt = v_θ(x,t), formally identical to Arco's input.
-
-    The challenge: v_θ is a 12B-param transformer. We can't express it
-    directly as Shem AnalogTrainable parameters at that scale.
-
-    Strategy: express the ODE INTEGRATION LOOP as a Shem system, with
-    v_θ as an external oracle (the mixed analog/digital computation).
-    The analog part (capacitor accumulation of Euler steps) IS in Shem's domain.
-
-    Readout convention: t = 1.0 (final generated image).
+    Flow matching (dx/dt = v_θ(x,t)) CANNOT be expressed as a BaseAnalogCkt
+    subclass: v_θ is a 10B+ parameter transformer with no fixed ODE state
+    vector.  This export documents the analog/digital boundary and circuit
+    mapping for co-design purposes — it is not runnable Ark code.
     """
     dynamics = graph._dynamics
     actual_nfe = dynamics.num_function_evaluations or nfe
     dt = 1.0 / actual_nfe
-    readout_times = [round((i + 1) * dt, 4) for i in range(actual_nfe)]
 
-    lines = _header(graph.name, "Flow (FLUX/SD3)", notes=[
+    lines = _analysis_header(graph.name, "Flow (FLUX/SD3)", notes=[
         "dx/dt = v_θ(x, t)  — rectified flow matching ODE",
-        "v_θ is a large transformer (analog/digital partition required)",
-        "ODE integration loop (Euler steps) is analog-native",
+        "v_θ is a large transformer: NOT expressible as BaseAnalogCkt",
+        "Analog-native part: Euler accumulation (capacitor + current injection)",
         f"NFE = {actual_nfe} steps, dt = {dt:.4f}",
+        f"D/A boundaries per step: ~4   Total: ~{actual_nfe * 4}",
     ])
 
     lines += [
-        f"class FlowODE(BaseAnalogCkt):",
-        f'    """Flow matching ODE for {graph.name}.',
+        f"# FlowODE is an ANALYSIS class, not a BaseAnalogCkt subclass.",
+        f"class FlowODE:",
+        f'    """Flow matching ODE analysis for {graph.name}.',
         f"",
-        f"    v_θ evaluation is mixed analog/digital (see AnalogGraph partition).",
-        f"    The Euler accumulation x_{{t+dt}} = x_t + dt·v_θ is pure analog.",
+        f"    NOT a BaseAnalogCkt subclass — v_θ transformer cannot be expressed",
+        f"    as a fixed-size CDG.  Documents analog/digital co-design boundary.",
         f"",
-        f"    Analog circuit mapping:",
-        f"      x_t → capacitor state (stored charge)",
-        f"      dt·v_θ → current injection (programmable gain amp × v_θ)",
-        f"      accumulation → Kirchhoff current summation",
-        f"",
-        f"    D/A boundaries per step: ~4 (2× ADC for digital attention, 2× DAC back)",
-        f"    Total for {actual_nfe} steps: ~{actual_nfe * 4} converters",
+        f"    Analog-native:  x_{{t+dt}} = x_t + dt·v_θ  (capacitor + current injection)",
+        f"    Mixed:          v_θ linear projections → crossbar MVM",
+        f"                    attention softmax → digital",
+        f"    D/A per step:   ~4   Total for {actual_nfe} steps: ~{actual_nfe * 4}",
+        f"    Mismatch sigma: {mismatch_sigma}",
         f'    """',
         f"",
-        f"    def __init__(self, num_steps: int = {actual_nfe}):",
-        f"        self.num_steps = num_steps",
-        f"        self.dt = 1.0 / num_steps",
-        f"        # Readout at final generation: t = 1.0",
-        f"        self.readout_time = 1.0",
+        f"    num_steps: int = {actual_nfe}",
+        f"    dt: float = {dt:.4f}",
         f"",
-        f"        # Gain parameter for Euler scaling: x_new = x + gain * v_theta * dt",
-        f"        # In hardware: programmable gain amplifier at crossbar output",
-        f"        self.euler_gain = mismatch(",
-        f"            AnalogTrainable(init=jnp.ones(1)),",
-        f"            sigma={mismatch_sigma}  # Gain mismatch → step size error",
-        f"        )",
-        f"        self.d_trainable = []  # no discrete/digital trainable params",
+        f"    def euler_step(self, x_t, v_theta, dt, gain=1.0):",
+        f'        """x_{{t+dt}} = x_t + dt · gain · v_θ  (analog accumulation)."""',
+        f"        return x_t + dt * gain * v_theta",
         f"",
-        f"    def euler_step(",
-        f"        self,",
-        f"        x_t: jnp.ndarray,",
-        f"        v_theta: jnp.ndarray,",
-        f"        dt: float,",
-        f"    ) -> jnp.ndarray:",
-        f'        """Single Euler step: x_{{t+dt}} = x_t + dt · gain · v_θ.',
-        f"",
-        f"        Analog: dt is a fixed time reference; gain is a crossbar output amplifier.",
-        f"        Accumulation via capacitor charge (Kirchhoff's current law).",
-        f'        """',
-        f"        return x_t + dt * self.euler_gain * v_theta",
-        f"",
-        f"    def dynamics(self, t, x):",
-        f'        """Placeholder — in production, v_θ network evaluation goes here."""',
-        f"        return jnp.zeros_like(x)  # Replace with actual v_θ call",
-        f"",
-    ]
-
-    lines += _diffrax_solve_block(0.0, 1.0, readout_times, dt0=dt, solver="Euler")
-
-    lines += [
-        f"    def generate(self, z: jnp.ndarray, velocity_fn) -> jnp.ndarray:",
-        f'        """Full generation: integrate {actual_nfe} Euler steps.',
-        f"",
-        f"        For FLUX-schnell: t = 0.00 → 0.25 → 0.50 → 0.75 → 1.00",
-        f'        """',
+        f"    def generate(self, z, velocity_fn):",
+        f'        """Integrate {actual_nfe} Euler steps.  velocity_fn is mixed analog/digital."""',
         f"        x = z",
         f"        for i in range(self.num_steps):",
         f"            t = i * self.dt",
-        f"            v = velocity_fn(x, t)  # Mixed analog/digital (see AnalogGraph)",
-        f"            x = self.euler_step(x, v, self.dt)",
-        f"        return x  # Readout at t=1.0",
+        f"            x = self.euler_step(x, velocity_fn(x, t), self.dt)",
+        f"        return x",
         f"",
+        f"# To build a runnable Ark circuit: implement v_θ linear projections as CDG",
+        f"# crossbar nodes (see neuro_analog.ark_bridge), keep softmax digital.",
     ]
 
     code = "\n".join(lines) + "\n"
@@ -333,12 +263,12 @@ def export_flow_to_shem(
 # Diffusion model export
 # ──────────────────────────────────────────────────────────────────────
 
-def export_diffusion_to_shem(
+def export_diffusion_to_ark(
     graph: AnalogGraph,
     output_path: Path | str,
     mismatch_sigma: float = 0.05,
 ) -> str:
-    """Export diffusion SDE/ODE to Shem-compatible JAX code.
+    """Export diffusion SDE/ODE as an analysis document (not a runnable Ark module).
 
     VP-SDE: dx = [-½β(t)x - β(t)s_θ(x,t)]dt + √β(t)dW
 
@@ -364,34 +294,36 @@ def export_diffusion_to_shem(
 
     readout_times = [round(i / num_steps, 4) for i in range(1, num_steps + 1)]
 
-    lines = _header(graph.name, "Diffusion (SD/DiT)", notes=[
+    lines = _analysis_header(graph.name, "Diffusion (SD/DiT)", notes=[
         "VP-SDE: dx = [-½β(t)x - β(t)s_θ]dt + √β(t)dW",
         "CLD maps to RLC circuit — Johnson-Nyquist noise is physical",
         f"β(t) ∈ [{beta_min:.4f}, {beta_max:.4f}], steps = {num_steps}",
         "Score network s_θ is the mixed analog/digital bottleneck",
+        "NOT a BaseAnalogCkt subclass — analysis/co-design document only",
     ])
 
     lines += [
-        f"class DiffusionDynamics(BaseAnalogCkt):",
-        f'    """VP-SDE and CLD dynamics for {graph.name}.',
+        f"# DiffusionDynamics is an ANALYSIS class, not a BaseAnalogCkt subclass.",
+        f"class DiffusionDynamics:",
+        f'    """VP-SDE and CLD dynamics analysis for {graph.name}.',
         f"",
-        f"    The score network s_θ(x,t) is 99.9% of compute per step.",
-        f"    The SDE update itself is trivially analog (scaling + noise injection).",
-        f"    See AnalogGraph for full s_θ partition (analog ~72%, digital ~28%).",
+        f"    NOT a BaseAnalogCkt subclass — score network s_θ is a large transformer.",
+        f"    Documents the analog/digital boundary and RLC circuit mapping.",
+        f"",
+        f"    SDE update (analog-native): scaling + noise injection",
+        f"    Score network s_θ (mixed): linear projections → crossbar, softmax → digital",
+        f"    CLD → RLC: x=capacitor charge, v=inductor current, R=Γ, L=M, C=1/β",
+        f"    Johnson-Nyquist thermal noise = √(4kTR·BW) — physical, not injected",
         f'    """',
         f"",
         f"    def __init__(self):",
         f"        self.num_steps = {num_steps}",
         f"        self.beta_min = {beta_min}",
         f"        self.beta_max = {beta_max}",
-        f"        # β(t) schedule: extracted from scheduler.betas",
-        f"        self.betas = mismatch(",
-        f"            AnalogTrainable(init=jnp.linspace({beta_min}, {beta_max}, {num_steps})),",
-        f"            sigma={mismatch_sigma}  # β precision → noise schedule accuracy",
-        f"        )",
-        f"        # Readout at each denoising step boundary",
+        f"        # β(t) schedule — in hardware: DAC-programmed reference voltage",
+        f"        # Mismatch sigma={mismatch_sigma} on β precision → noise schedule error",
+        f"        self.betas = jnp.linspace({beta_min}, {beta_max}, {num_steps})",
         f"        self.readout_times = jnp.array({readout_times[:min(8, len(readout_times))]})",
-        f"        self.d_trainable = []  # no discrete/digital trainable params",
         f"",
         f"    def _beta_t(self, t: float) -> jnp.ndarray:",
         f"        return self.beta_min + t * (self.beta_max - self.beta_min)",
@@ -432,29 +364,11 @@ def export_diffusion_to_shem(
         f"",
     ]
 
-    # Diffrax SDE solve (using Euler-Maruyama)
     lines += [
-        f"    def solve_sde(self, x0: jnp.ndarray) -> jnp.ndarray:",
-        f'        """Solve VP-SDE via Euler-Maruyama (Shem\'s SDE mode).',
         f"",
-        f"        dx = drift·dt + diffusion·dW",
-        f"        Hardware: drift via analog circuit, dW via thermal TRNG.",
-        f'        """',
-        f"        term = diffrax.MultiTerm(",
-        f"            diffrax.ODETerm(lambda t, x, args: self.vp_sde_drift(t, x, args)),",
-        f"            diffrax.WeaklyDiagonalControlTerm(",
-        f"                lambda t, x, args: self.vp_sde_diffusion_coeff(t),",
-        f"                diffrax.VirtualBrownianTree(t0=1.0, t1=0.0, tol=1e-3, shape=x0.shape, key=jax.random.PRNGKey(0)),",
-        f"            ),",
-        f"        )",
-        f"        solver = diffrax.Euler()",
-        f"        saveat = diffrax.SaveAt(ts=self.readout_times)",
-        f"        sol = diffrax.diffeqsolve(",
-        f"            term, solver, t0=1.0, t1=0.0, dt0=-1.0/{num_steps},",
-        f"            y0=x0, saveat=saveat, args=lambda x, t: jnp.zeros_like(x),",
-        f"        )",
-        f"        return sol.ys",
-        f"",
+        f"# To build a runnable Ark circuit: express SDE update as CDG StateVar with",
+        f"# stochastic FlowEdge (is_stochastic=True), implement s_θ linear projections",
+        f"# as crossbar CDG nodes (see neuro_analog.ark_bridge), keep softmax digital.",
     ]
 
     code = "\n".join(lines) + "\n"
@@ -463,15 +377,15 @@ def export_diffusion_to_shem(
 
 
 
-def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> str:
-    """Export a DEQ AnalogGraph as a Shem/Diffrax ODE specification.
+def export_deq_to_ark(graph: AnalogGraph, output_path, sigma: float = 0.05) -> str:
+    """Export a DEQ AnalogGraph as an Ark-compatible BaseAnalogCkt subclass.
 
     DEQ fixed-point equation z* = f_theta(z*, x) maps to the gradient flow ODE:
       dz/dt = f_theta(z, x) - z
     At equilibrium dz/dt = 0, so z* = f_theta(z*, x).
 
-    This is native Arco/Legno format. Shem can optimize theta for mismatch-robust
-    convergence - pushing the spectral radius rho(df/dz) further below 1.
+    This is native Ark ODE format. Ark can optimize theta for mismatch-robust
+    convergence — pushing the spectral radius rho(df/dz) further below 1.
 
     State augmentation: y = concat([z, x_input]), dx/dt = 0 (x is held constant).
     This lets BaseAnalogCkt.__call__ drive both z and x through a single ODETerm.
@@ -516,7 +430,7 @@ def export_deq_to_shem(graph: AnalogGraph, output_path, sigma: float = 0.05) -> 
         "# Auto-generated BaseAnalogCkt DEQ specification",
         "# dz/dt = f_theta(z, x) - z  [gradient flow to fixed point]",
         "# State augmented: y = concat([z, x_input]), dx/dt = 0",
-        "# Generated by neuro_analog.ir.shem_export.export_deq_to_shem()",
+        "# Generated by neuro_analog.ir.ark_export.export_deq_to_ark()",
         "",
         "import jax.numpy as jnp",
         "import jax.random as jrandom",

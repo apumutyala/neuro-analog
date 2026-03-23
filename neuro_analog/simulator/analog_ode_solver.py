@@ -14,7 +14,7 @@ Where:
   dW(t) = Wiener process increment
 
 The sqrt(dt) factor is the correct Ito SDE discretization (not just dt * noise),
-matching Shem §4.2 equation 10.
+matching Wang & Achour (arXiv:2411.03557) §4.2 equation 10.
 
 Additional DC drift:
   An RC integrator accumulates offset due to input-referred offset voltage of

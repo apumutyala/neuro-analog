@@ -279,7 +279,7 @@ def configure_analog_profile(model: nn.Module, profile: str) -> None:
         continuous analog domain: mismatch and thermal noise still apply
         (they are physical and unavoidable), but no discretization occurs
         until the computation is complete. Models a true analog compute
-        substrate of the kind targeted by Shem and ARK, where the signal
+        substrate of the kind targeted by Ark, where the signal
         lives in conductance/voltage space throughout the forward pass and
         is only read out digitally at the end.
 
