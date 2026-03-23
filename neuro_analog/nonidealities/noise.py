@@ -1,7 +1,7 @@
 """
 Thermal noise budget — Nonideality #2.
 
-Shem models transient noise as an SDE: dx = f(x,θ,t)dt + g(x,θ,t)dW(t).
+Wang & Achour (arXiv:2411.03557) model transient noise as an SDE: dx = f(x,θ,t)dt + g(x,θ,t)dW(t).
 Our framework estimates the diffusion coefficient g at each node from
 first-principles physics, then propagates noise power through the graph.
 
@@ -55,7 +55,7 @@ class NoiseBudget:
     snr_db: float = float("inf")
     meets_target_snr: bool = True
 
-    # SDE parameters for Shem
+    # SDE parameters (Wang & Achour §4.2 noise model)
     sde_diffusion_coeff: float = 0.0  # g in dx = f·dt + g·dW
     noise_bandwidth_hz: float = HW_BANDWIDTH_HZ
 

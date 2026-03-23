@@ -187,7 +187,7 @@ class ArchitectureFamily(Enum):
     FLOW = "flow"
     EBM = "ebm"
     TRANSFORMER = "transformer"
-    NEURAL_ODE = "neural_ode"  # Chen et al. 2018; IS an ODE, strongest Shem fit
+    NEURAL_ODE = "neural_ode"  # Chen et al. 2018; IS an ODE, strongest Ark fit
     DEQ = "deq"               # Bai et al. 2019; implicit equilibrium = feedback analog circuit
 
 
@@ -268,7 +268,7 @@ class AnalogAmenabilityProfile:
             self.dynamics_score = 0.8
             if self.dynamics.dynamics_type in ("LTI_ODE", "continuous_ODE", "time_varying_ODE"):
                 # All continuous ODE types map naturally to RC integrators.
-                # Neural ODE (time_varying_ODE) IS the Shem input format → top score.
+                # Neural ODE (time_varying_ODE) IS Ark's native input format → top score.
                 self.dynamics_score = 1.0
             elif self.dynamics.dynamics_type == "energy_minimization":
                 self.dynamics_score = 0.95

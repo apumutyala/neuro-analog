@@ -6,7 +6,7 @@ Loads sweep results from experiments/cross_arch_tolerance/ and prints
 a ranked summary of analog tolerance across all 7 neural network families.
 
 Architecture families (ordered by analog amenability):
-    1. Neural ODE   — IS an ODE; direct Shem/Arco input format
+    1. Neural ODE   — IS an ODE; direct Ark (Arco) input format
     2. SSM/Mamba    — diagonal A → independent RC integrators
     3. EBM          — Boltzmann sampling → p-bit / sMTJ arrays
     4. Flow         — clean ODE but large vector field (MMDiT)
@@ -55,7 +55,7 @@ sys.path.insert(0, str(_ROOT))
 
 # Analog amenability order: most → least analog-native
 _ARCH_ORDER = [
-    ("neural_ode",  "Neural ODE",  "dx/dt = f_θ(x,t) — IS Shem's input format"),
+    ("neural_ode",  "Neural ODE",  "dx/dt = f_θ(x,t) — IS Ark's input format"),
     ("ssm",         "SSM/Mamba",   "diagonal A → independent RC integrators"),
     ("ebm",         "EBM",         "Boltzmann sampling → p-bit / sMTJ arrays"),
     ("flow",        "Flow",        "clean ODE, large v_θ vector field"),

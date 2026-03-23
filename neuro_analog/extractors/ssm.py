@@ -94,7 +94,7 @@ def _build_precision_from_stats(stats: dict) -> PrecisionSpec:
       selective mechanism.
 
       Grounding the PrecisionSpec in real stats means our downstream feasibility
-      analysis (and the Shem export) reflects what the hardware actually needs.
+      analysis (and the Ark export) reflects what the hardware actually needs.
     """
     bits = _estimate_bits_from_range(
         stats.get("min", 0.0),

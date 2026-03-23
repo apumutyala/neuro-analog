@@ -1,11 +1,11 @@
 """
 DAC/ADC precision requirements — Nonideality #3.
 
-Shem uses Gumbel-Softmax relaxation for discrete parameter optimization,
-allowing gradient-based tuning of quantized crossbar conductances.
+Differentiable discrete optimization (Wang & Achour arXiv:2411.03557 §4.3) uses
+Gumbel-Softmax relaxation for gradient-based tuning of quantized crossbar conductances.
 
 Our role upstream: determine WHAT DAC resolution is needed at each D/A
-boundary so that Shem's Gumbel-Softmax can parameterize it correctly.
+boundary so that Ark's discrete optimizer can parameterize it correctly.
 
 Key formula:
     SNR_dB = 6.02 · ENOB + 1.76   (ideal ADC/DAC)
@@ -52,7 +52,7 @@ class QuantizationReport:
     quantization_noise_variance: float = 0.0
     achieved_snr_db: float = 0.0
 
-    # Gumbel-Softmax levels for Shem
+    # Gumbel-Softmax discrete levels (§4.3)
     num_discrete_levels: int = 256  # 2^required_bits
 
     # Hardware cost
@@ -108,7 +108,7 @@ def compute_precision_requirements(
     2. For each boundary, look up the signal dynamic range from activation_stats
        (or use PrecisionSpec from the source/target node)
     3. Compute ENOB from max(SNR requirement, dynamic range requirement)
-    4. Report required bits, quantization noise, and Shem discrete levels
+    4. Report required bits, quantization noise, and discrete levels
 
     Args:
         graph: AnalogGraph from any extractor.
@@ -202,6 +202,6 @@ def quantization_summary(reports: dict[str, QuantizationReport]) -> str:
         "─" * 78,
         f"Total converter overhead: {total_power:.3f} mW across {len(reports)} boundaries",
         f"",
-        f"Shem note: use Gumbel-Softmax(num_levels) for differentiable discrete optimization",
+        f"Ark note: use Gumbel-Softmax(num_levels) for differentiable discrete optimization",
     ]
     return "\n".join(lines)

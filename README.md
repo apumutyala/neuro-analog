@@ -2,7 +2,7 @@
 
 Analog hardware — crossbar arrays, RC integrators, differential-pair activations — can run neural network inference at orders-of-magnitude lower energy than digital, but it introduces unavoidable physical nonidealities: fabrication mismatch bakes static weight errors into every device, thermal noise corrupts every readout, and ADC quantization discretizes every layer boundary. Which neural architectures actually survive these conditions, and at what noise level does each one break?
 
-This framework answers that empirically. It instruments any PyTorch model with physics-grounded analog nonidealities, measures how task-level quality degrades as noise increases, and extracts the model into a typed IR classifying each operation as analog-native, digital-required, or hybrid — providing the front‑end analysis and exports needed by analog‑aware solvers and compilers such as [Shem](https://arxiv.org/abs/2411.03557) (Achour & Wang, 2024) and [Ark](https://arxiv.org/abs/2309.08774).
+This framework answers that empirically. It instruments any PyTorch model with physics-grounded analog nonidealities, measures how task-level quality degrades as noise increases, and extracts the model into a typed IR classifying each operation as analog-native, digital-required, or hybrid — then exports compatible models to [Ark](https://arxiv.org/abs/2309.08774) (Wang & Achour, ASPLOS '24) as runnable `BaseAnalogCkt` subclasses. The noise physics follows the mismatch/SDE/discrete-optimization model described in Wang & Achour (arXiv:2411.03557).
 
 ---
 
@@ -38,7 +38,7 @@ See [`examples/01_quickstart.py`](examples/01_quickstart.py) for a full walkthro
 
 Seven neural network families trained on small-scale tasks, then swept over conductance mismatch σ ∈ {0–15%} with 50 Monte Carlo trials per point. Three noise sources ablated independently. ADC bit-width swept separately. Two simulation profiles: conservative (ADC at every layer boundary) and full-analog (ADC at final readout only).
 
-The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are before committing to a chip design or running analog‑aware adjoint optimization frameworks built on JAX/Diffrax or higher‑level systems such as Shem.
+The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are before committing to a chip design or running analog-aware adjoint optimization within Ark.
 
 **Disclaimer:** These are simulation results on demo-scale models (1K–103K parameters) trained near capacity on synthetic and small benchmark tasks. They represent a worst-case bound for each architecture family — production-scale overparameterized models will degrade more gracefully. This is not hardware validation. Several physical effects are not simulated (see Nonidealities section). Results should be interpreted as characterizing the analog sensitivity of the architecture's computational structure, not a specific chip.
 
@@ -135,10 +135,44 @@ python sweep_all.py --only diffusion --analog-substrate cld
 
 ---
 
+## Ark integration
+
+neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24) via two export paths:
+
+**Path 1 — Direct code generation** (`neuro_analog/ir/ark_export.py`): Reads weights from the extracted `ODESystem` or `AnalogGraph` and emits a Python/JAX file containing a `BaseAnalogCkt` subclass with `make_args`, `ode_fn`, `noise_fn`, and `readout` implemented. The generated file is immediately runnable by Ark's `OptCompiler` and trains with the adjoint method via JAX/Diffrax.
+
+```bash
+python examples/04_ark_export.py              # Neural ODE (default)
+python examples/04_ark_export.py --arch ssm   # SSM
+python examples/04_ark_export.py --arch deq   # DEQ
+```
+
+**Path 2 — CDG bridge** (`neuro_analog/ark_bridge/neural_ode_cdg.py`): Converts Neural ODE weights in Hopfield/Cohen-Grossberg normal form (dx/dt = −x + J·tanh(x) + b + K·u) to a proper Ark `CDGSpec` → `CDG` → `OptCompiler` → `BaseAnalogCkt` subclass. This uses Ark's full compiler pipeline with typed node/edge production rules, per-weight `TrainableMgr` registration, and optional mismatch tagging.
+
+```bash
+python examples/05_cdg_bridge.py --n 4 --sigma 0.10
+```
+
+**Which architectures export to Ark:**
+
+| Architecture | Export tier | Generated class | Notes |
+|---|---|---|---|
+| Neural ODE | Runnable `BaseAnalogCkt` | `NeuralODEAnalogCkt` | Two paths: direct + CDG bridge |
+| SSM / Mamba | Runnable `BaseAnalogCkt` | `SSMAnalogCkt` | Direct path only; diagonal A → RC bank |
+| DEQ | Runnable `BaseAnalogCkt` | `DEQAnalogCkt` | Fixed-point → ODE form (dz/dt = f−z) |
+| Flow | Analysis document | `FlowODE` (plain class) | v_θ is 12B params, not a fixed ODE |
+| Diffusion | Analysis document | `DiffusionDynamics` (plain class) | 100-step SDE schedule |
+| Transformer | Not exported | — | No native ODE; Softmax is digital |
+| EBM | Not exported | — | Gibbs sampling → p-bit, no ODE form |
+
+Requires Ark, JAX, Diffrax, Equinox, Lineax (`pip install -e ".[jax]"`).
+
+---
+
 ## Docs
 
 - [`docs/simulator.md`](docs/simulator.md) — AnalogLinear, activations, ODE solver, sweep API, design decisions
 - [`docs/experiments.md`](docs/experiments.md) — the 7 models, full results, complete vs. in-progress
-- [`docs/shem_export.md`](docs/shem_export.md) — Shem/Ark connection, export pipeline, next steps per architecture
+- [`docs/ark_export.md`](docs/ark_export.md) — Ark export pipeline, two paths, per-architecture status
 
 Full methodology and errata: [`experiments/cross_arch_tolerance/TECHNICAL_NOTE.md`](experiments/cross_arch_tolerance/TECHNICAL_NOTE.md)

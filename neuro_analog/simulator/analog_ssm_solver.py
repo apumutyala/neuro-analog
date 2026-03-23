@@ -9,14 +9,14 @@ analogize() only replaces nn.Linear modules (B, C, D projections) with AnalogLin
 It completely misses the A_bar diagonal decay — which is the MOST analog-critical
 parameter because it sets the RC time constants of the integrator bank.
 
-This module fills that gap by applying Shem-compatible noise to the full SSM:
+This module fills that gap by applying the Wang & Achour noise model to the full SSM:
 
-  1. A_bar mismatch (Shem §4.1):
+  1. A_bar mismatch (§4.1, arXiv:2411.03557):
      A_bar' = δ_A ⊙ A_bar,  δ_A ~ N(1, σ²)
      In hardware: fabrication variation in RC time constants.
      This is the dominant nonideality for SSMs.
 
-  2. Transient noise on state update (Shem §4.2):
+  2. Transient noise on state update (§4.2):
      h[t] = A_bar' · h[t-1] + B_bar · u[t] + σ_transient · √Δt · ξ[t]
      In hardware: Johnson-Nyquist noise on integration capacitors.
 

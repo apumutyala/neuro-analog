@@ -28,7 +28,7 @@ class TaxonomyEntry:
     dynamics_description: str = ""
     analog_circuit_primitive: str = ""  # Primary analog primitive used
     key_digital_bottleneck: str = ""    # What forces digital computation
-    analog_compiler_fit: str = ""       # How well it maps to analog ODE compilers (Ark/Shem)
+    analog_compiler_fit: str = ""       # How well it maps to Ark's BaseAnalogCkt interface
 
 
 class AnalogTaxonomy:
@@ -72,13 +72,13 @@ class AnalogTaxonomy:
         """Add Neural ODE reference profile — demo centerpiece, highest analog amenability.
 
         Neural ODE IS an ODE: dx/dt = f_θ(x,t).
-        - f_θ is a small MLP (64–256 dim) → fits Shem's parameter scale exactly
-        - Adjoint-method training = Shem's optimization method
-        - Diffrax solver = Shem's internal solver
-        - Export IS a valid Shem input today — no approximation needed
+        - f_θ is a small MLP (64–256 dim) → fits within demonstrated crossbar scale
+        - Adjoint-method training = Ark's gradient computation method
+        - Diffrax solver = Ark's internal ODE solver
+        - Export IS a valid Ark BaseAnalogCkt today — no approximation needed
 
-        Score ~0.95: highest in the taxonomy because the architecture IS the
-        computation Shem was designed for.
+        Score ~0.95: highest in the taxonomy because the architecture IS an ODE,
+        the exact format Ark compiles.
         """
         from neuro_analog.extractors.neural_ode import NeuralODEExtractor
 
@@ -92,8 +92,8 @@ class AnalogTaxonomy:
             analog_circuit_primitive="Crossbar MVM (W·x) + RC integrator (ODE step)",
             key_digital_bottleneck="Adaptive step-size controller (purely digital bookkeeping)",
             analog_compiler_fit=(
-                "Perfect — dx/dt = f_θ(x,t) IS Shem's input format. "
-                "Export_neural_ode_to_shem() produces runnable Shem code today."
+                "Perfect — dx/dt = f_θ(x,t) IS Ark's input format. "
+                "export_neural_ode_to_ark() produces a runnable BaseAnalogCkt subclass today."
             ),
         )
 

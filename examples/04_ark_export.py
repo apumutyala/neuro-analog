@@ -6,8 +6,8 @@ Ark (github.com/WangYuNeng/Ark) is a compiler for analog compute circuits.
 This script shows the minimal path from a trained Neural ODE or SSM to a
 running BaseAnalogCkt subclass that Ark can compile.
 
-Unlike 03_shem_pipeline.py, this script has no dependency on the cross-arch
-experiment directory — it builds a small demo model from scratch and exports it.
+Unlike 03_ark_pipeline.py, this script has no dependency on the cross-arch
+experiment directory -- it builds a small demo model from scratch and exports it.
 Follow the same pattern with your own trained model.
 
 Prerequisites:
@@ -21,7 +21,7 @@ Usage:
     python examples/04_ark_export.py --arch deq    # DEQ
 
 Output:
-    outputs/neural_ode_ark.py  — BaseAnalogCkt subclass, run directly to verify
+    outputs/neural_ode_ark.py  -- BaseAnalogCkt subclass, run directly to verify
     outputs/ssm_ark.py
     outputs/deq_ark.py
 """
@@ -65,9 +65,9 @@ def check_ark():
 # ── Neural ODE export ──────────────────────────────────────────────────────────
 
 def export_neural_ode(sigma: float, out_path: Path) -> None:
-    from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_shem
+    from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_ark
 
-    sep("Neural ODE → Ark BaseAnalogCkt")
+    sep("Neural ODE -> Ark BaseAnalogCkt")
 
     # Build a demo extractor (2D state, time-augmented 3-layer tanh MLP).
     # For your own model: use NeuralODEExtractor.from_module(f_theta, state_dim=...)
@@ -76,14 +76,14 @@ def export_neural_ode(sigma: float, out_path: Path) -> None:
     profile = extractor.run()
 
     print(f"  Architecture:       Neural ODE  dx/dt = f_theta(x, t)")
-    print(f"  State dim:          {profile.state_dimension}")
+    print(f"  State dim:          {profile.dynamics.state_dimension}")
     print(f"  Analog FLOP share:  {profile.analog_flop_fraction*100:.0f}%")
     print(f"  D/A boundaries:     {profile.da_boundary_count}  (DAC in, ADC out)")
     print(f"  Mismatch sigma:     {sigma}")
     print()
 
     # Generate the BaseAnalogCkt subclass
-    code = export_neural_ode_to_shem(extractor, out_path, mismatch_sigma=sigma)
+    code = export_neural_ode_to_ark(extractor, out_path, mismatch_sigma=sigma)
     print(f"  Written: {out_path}  ({len(code.splitlines())} lines)")
 
     # Verify it runs against Ark
@@ -92,25 +92,42 @@ def export_neural_ode(sigma: float, out_path: Path) -> None:
 
 # ── SSM export ─────────────────────────────────────────────────────────────────
 
+class _TinySSM(nn.Module):
+    """Minimal Mamba-style SSM for demo export (no diffusers/mamba_ssm dependency)."""
+    def __init__(self, d_model: int = 32, d_state: int = 8, expand: int = 1):
+        super().__init__()
+        d_inner = d_model * expand
+        self.A_log   = nn.Parameter(torch.randn(d_inner, d_state))
+        self.x_proj  = nn.Linear(d_inner, 2 * d_state)
+        self.dt_proj = nn.Linear(d_inner, d_inner)
+        self.out_proj = nn.Linear(d_inner, d_model)
+        self.d_model  = d_model
+        self.d_state  = d_state
+
+
 def export_ssm(sigma: float, out_path: Path) -> None:
-    from neuro_analog.extractors.ssm import SSMExtractor
-    from neuro_analog.ir.shem_export import export_ssm_to_shem
+    from neuro_analog.extractors.ssm import MambaExtractor
+    from neuro_analog.ir.ark_export import export_ssm_to_ark
 
-    sep("SSM → Ark BaseAnalogCkt")
+    sep("SSM -> Ark BaseAnalogCkt")
 
-    extractor = SSMExtractor.reference(state_dim=8, input_dim=16)
-    extractor.load_model()
+    d_state = 8
+    model = _TinySSM(d_model=32, d_state=d_state)
+    model.eval()
+
+    extractor = MambaExtractor(model_name="demo_ssm", device="cpu")
+    extractor.model = model
+    dyn = extractor.extract_dynamics()
     graph = extractor.build_graph()
-    profile = extractor.run()
-
+    graph.set_dynamics(dyn)   # build_graph() doesn't set _dynamics — wire it manually
+    # Skip extractor.run() — MambaExtractor.load_model() always hits HuggingFace.
+    # Print known demo dimensions directly.
     print(f"  Architecture:       Diagonal S4D SSM  dx/dt = A*x + B*u")
-    print(f"  State dim:          {profile.state_dimension}")
-    print(f"  Analog FLOP share:  {profile.analog_flop_fraction*100:.0f}%")
-    print(f"  D/A boundaries:     {profile.da_boundary_count}")
+    print(f"  State dim:          {d_state}  (demo: d_state={d_state})")
     print(f"  Mismatch sigma:     {sigma}")
     print()
 
-    code = export_ssm_to_shem(graph, out_path, sigma=sigma)
+    code = export_ssm_to_ark(graph, extractor, out_path, mismatch_sigma=sigma)
     print(f"  Written: {out_path}  ({len(code.splitlines())} lines)")
 
     _verify(out_path, "SSMAnalogCkt", state_dim=8)
@@ -120,9 +137,9 @@ def export_ssm(sigma: float, out_path: Path) -> None:
 
 def export_deq(sigma: float, out_path: Path) -> None:
     from neuro_analog.extractors.deq import DEQExtractor
-    from neuro_analog.ir.shem_export import export_deq_to_shem
+    from neuro_analog.ir.ark_export import export_deq_to_ark
 
-    sep("DEQ → Ark BaseAnalogCkt")
+    sep("DEQ -> Ark BaseAnalogCkt")
 
     extractor = DEQExtractor.reference(z_dim=64, x_dim=64, hidden_dim=128)
     extractor.load_model()
@@ -130,13 +147,13 @@ def export_deq(sigma: float, out_path: Path) -> None:
     profile = extractor.run()
 
     print(f"  Architecture:       DEQ  dz/dt = f_theta(z, x) - z")
-    print(f"  State dim:          {profile.state_dimension}  (augmented: z + x = {profile.state_dimension + 64})")
+    print(f"  State dim:          {profile.dynamics.state_dimension}  (augmented z+x = {profile.dynamics.state_dimension + 64})")
     print(f"  Analog FLOP share:  {profile.analog_flop_fraction*100:.0f}%")
     print(f"  D/A boundaries:     {profile.da_boundary_count}")
     print(f"  Mismatch sigma:     {sigma}")
     print()
 
-    code = export_deq_to_shem(graph, out_path, sigma=sigma)
+    code = export_deq_to_ark(graph, out_path, sigma=sigma)
     print(f"  Written: {out_path}  ({len(code.splitlines())} lines)")
 
     # DEQ uses augmented state y = concat([z0, x_input])
@@ -200,15 +217,19 @@ def main(arch: str = "neural_ode", sigma: float = 0.05) -> None:
     print("  Using your own trained model:")
     print()
     print("  Neural ODE:")
-    print("    from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_shem")
+    print("    from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_ark")
     print("    extractor = NeuralODEExtractor.from_module(your_f_theta, state_dim=N)")
     print("    extractor.load_model()")
-    print("    export_neural_ode_to_shem(extractor, 'my_model_ark.py', mismatch_sigma=0.05)")
+    print("    export_neural_ode_to_ark(extractor, 'my_model_ark.py', mismatch_sigma=0.05)")
     print()
     print("  SSM:")
-    print("    from neuro_analog.ir.shem_export import export_ssm_to_shem")
-    print("    graph = SSMExtractor.from_module(your_ssm, ...).build_graph()")
-    print("    export_ssm_to_shem(graph, 'my_ssm_ark.py')")
+    print("    from neuro_analog.extractors.ssm import MambaExtractor")
+    print("    from neuro_analog.ir.ark_export import export_ssm_to_ark")
+    print("    extractor = MambaExtractor(model_name='my_ssm', device='cpu')")
+    print("    extractor.model = your_ssm_module")
+    print("    extractor.extract_dynamics()")
+    print("    graph = extractor.build_graph()")
+    print("    export_ssm_to_ark(graph, extractor, 'my_ssm_ark.py', mismatch_sigma=0.05)")
 
 
 if __name__ == "__main__":

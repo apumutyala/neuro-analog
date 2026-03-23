@@ -2,13 +2,13 @@
 Flow model extractor for FLUX.1 and Stable Diffusion 3.
 
 The flow matching ODE dx/dt = v_θ(x,t) is structurally the simplest
-mapping to analog ODE compilers (Ark/Shem). Key extractions:
+mapping to Ark's analog ODE compiler. Key extractions:
 - Velocity field Lipschitz constant (ODE stiffness)
 - Flow straightness (Euler integrator sufficiency)
 - Number of function evaluations (integration steps)
 - MMDiT dual-stream architecture partition
 
-Connection to Ark/Shem analog compiler:
+Connection to Ark analog compiler:
   Flow: dx/dt = v_θ(x, t)
   Arco: rel deriv(x, t) = f(x, t)
   
