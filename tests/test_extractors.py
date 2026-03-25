@@ -190,8 +190,20 @@ class TestEBMExtractor:
         ext = EBMExtractor.extropic_dtm(dim=64, denoising_steps=steps)
         ext.load_model()
         graph = ext.build_graph()
-        sample_nodes = [n for n in graph.nodes if n.op_type == OpType.SAMPLE]
-        assert len(sample_nodes) == steps
+        # DTCA uses GIBBS_STEP (subthreshold CMOS RNG), not SAMPLE (sMTJ p-bit)
+        gibbs_nodes = [n for n in graph.nodes if n.op_type == OpType.GIBBS_STEP]
+        assert len(gibbs_nodes) == steps
+        # Each step: ACCUMULATION (G_k field) + RESISTOR_DAC (bias) + GIBBS_STEP
+        assert len(graph.nodes) == steps * 3
+        assert graph.family == ArchitectureFamily.DTM
+
+    def test_dtm_dynamics(self):
+        ext = EBMExtractor.extropic_dtm(dim=64, denoising_steps=3)
+        ext.load_model()
+        dynamics = ext.extract_dynamics()
+        assert dynamics.dynamics_type == "thermodynamic_gibbs"
+        assert dynamics.tau_rng_ns == 100.0
+        assert dynamics.energy_per_sample_J == 350e-18
 
     def test_ebm_dynamics_stochastic(self):
         ext = EBMExtractor.rbm()

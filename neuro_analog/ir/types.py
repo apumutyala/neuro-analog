@@ -51,6 +51,8 @@ class OpType(Enum):
     SAMPLE = auto()             # Probabilistic sampling → p-bit / sMTJ
     SKIP_CONNECTION = auto()    # Residual add → current summation
     GAIN = auto()               # Scalar multiply → programmable gain amplifier
+    GIBBS_STEP = auto()         # Chromatic Gibbs update → subthreshold CMOS RNG (DTCA §II.B, Fig. 3)
+    RESISTOR_DAC = auto()       # Bias loading → DAC-driven resistor network (DTCA Appendix E)
     
     # ── Digital-required operations ──────────────────────────────────
     SOFTMAX = auto()            # exp + sum + division (precision-critical)
@@ -189,6 +191,7 @@ class ArchitectureFamily(Enum):
     TRANSFORMER = "transformer"
     NEURAL_ODE = "neural_ode"  # Chen et al. 2018; IS an ODE, strongest Ark fit
     DEQ = "deq"               # Bai et al. 2019; implicit equilibrium = feedback analog circuit
+    DTM = "dtm"               # Denoising Thermodynamic Model (Jelinčič et al. 2025, Extropic Corp)
 
 
 @dataclass
@@ -212,9 +215,17 @@ class DynamicsProfile:
     lipschitz_constant: Optional[float] = None         # Velocity field Lipschitz bound
     flow_straightness: Optional[float] = None          # 0=curved, 1=perfectly straight
     num_function_evaluations: Optional[int] = None
-    
+
     # Stiffness
     stiffness_ratio: Optional[float] = None            # Condition number of dynamics
+
+    # DTM-specific (Jelinčič et al. 2025, Extropic Corp — Appendix D, E, K)
+    grid_side_L: Optional[int] = None                  # DTCA grid side length L (paper default: 70)
+    connectivity_degree: Optional[int] = None          # G_k neighbor count k ∈ {8,12,16,20,24} (Table II)
+    gibbs_steps_K: Optional[int] = None                # Gibbs sweeps per denoising step K (Appendix E)
+    denoising_steps_T: Optional[int] = None            # DTM denoising chain length T (Section III)
+    tau_rng_ns: Optional[float] = None                 # RNG flip time in ns (Appendix K: ~100 ns)
+    energy_per_sample_J: Optional[float] = None        # Energy per sampled bit (Appendix E: ~350 aJ)
 
 
 @dataclass
@@ -259,9 +270,16 @@ class AnalogAmenabilityProfile:
         if weights is None:
             weights = {"dynamics": 0.25, "precision": 0.25, "boundary": 0.15, "noise": 0.20, "analog_frac": 0.15}
         
-        # Noise score: architectures requiring TRNG (stochastic diffusion) are harder
-        # for analog because thermal noise sources must be precisely calibrated.
-        self.noise_score = 0.7 if self.dynamics.is_stochastic else 1.0
+        # Noise score: stochastic architectures requiring precise TRNG calibration score lower.
+        # Exception: DTCA thermodynamic_gibbs — thermal noise IS the computational resource
+        # (Jelinčič et al. 2025, Section I: "thermal fluctuations as a computational resource").
+        # For DTCA, uncalibrated thermal noise is not a nonideality — it is the desired randomness.
+        if self.dynamics.dynamics_type == "thermodynamic_gibbs":
+            self.noise_score = 1.0
+        elif self.dynamics.is_stochastic:
+            self.noise_score = 0.7
+        else:
+            self.noise_score = 1.0
 
         # Dynamics score: 1.0 for native ODE/SDE, 0.0 for no dynamics
         if self.dynamics.has_dynamics:

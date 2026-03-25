@@ -87,8 +87,15 @@ def plot_noise_budget(
     def to_db(var):
         return np.where(var > 0, 10 * np.log10(var + 1e-30), -100.0)
 
+    # Stochastic-native nodes: SNR is undefined — noise is the intended signal.
+    #   GIBBS_STEP (gold //): thermodynamic, calibration-free by physics
+    #   SAMPLE / NOISE_INJECTION (gold \\): calibration error metric applies instead
+    is_gibbs      = np.array([b.op_type == "GIBBS_STEP" for b in analog_budgets])
+    is_calibration = np.array([b.op_type in ("NOISE_INJECTION", "SAMPLE") for b in analog_budgets])
+    is_snr_exempt  = is_gibbs | is_calibration
     snr_values = np.array([b.snr_db if b.snr_db != float("inf") else 80.0 for b in analog_budgets])
     meets_target = np.array([b.meets_target_snr for b in analog_budgets])
+    meets_cal = np.array([b.meets_calibration for b in analog_budgets])
 
     fig, (ax_noise, ax_snr) = plt.subplots(2, 1, figsize=figsize, sharex=True)
     fig.patch.set_facecolor("#1a1a2e")
@@ -115,8 +122,37 @@ def plot_noise_budget(
     ax_noise.set_ylim(bottom=1e-25)
 
     # SNR panel
-    bar_colors = ["#2ecc71" if ok else "#e74c3c" for ok in meets_target]
-    ax_snr.bar(x, snr_values, color=bar_colors, width=bar_w, alpha=0.85)
+    #   Green  : meets SNR target
+    #   Red    : fails SNR target
+    #   Gold // : GIBBS_STEP — thermodynamic, SNR undefined
+    #   Gold \\ : SAMPLE / NOISE_INJECTION — calibration metric applies, not SNR
+    bar_colors = []
+    for gibbs, cal, snr_ok, cal_ok in zip(is_gibbs, is_calibration, meets_target, meets_cal):
+        if gibbs:
+            bar_colors.append("#f39c12")
+        elif cal:
+            bar_colors.append("#f39c12" if cal_ok else "#e67e22")  # dim orange = cal violation
+        else:
+            bar_colors.append("#2ecc71" if snr_ok else "#e74c3c")
+
+    bars = ax_snr.bar(x, snr_values, color=bar_colors, width=bar_w, alpha=0.85)
+    for bar, gibbs, cal in zip(bars, is_gibbs, is_calibration):
+        if gibbs:
+            bar.set_hatch("//")
+            bar.set_edgecolor("#f1c40f")
+        elif cal:
+            bar.set_hatch("\\\\")
+            bar.set_edgecolor("#f1c40f")
+
+    # Annotate calibration error % on SAMPLE / NOISE_INJECTION bars
+    for i, (b, cal) in enumerate(zip(analog_budgets, is_calibration)):
+        if cal and not np.isnan(b.calibration_error):
+            ax_snr.text(
+                x[i], snr_values[i] + 1.0,
+                f"{b.calibration_error * 100:.0f}%",
+                ha="center", va="bottom", color="white", fontsize=6,
+            )
+
     ax_snr.axhline(y=target_snr_db, color="#f1c40f", linewidth=1.5, linestyle="--",
                    label=f"Target {target_snr_db:.0f} dB")
     ax_snr.set_ylabel("SNR (dB)", color="white", fontsize=9)
@@ -124,14 +160,36 @@ def plot_noise_budget(
     ax_snr.set_xticklabels(names, rotation=60, ha="right", color="white", fontsize=7)
     ax_snr.tick_params(colors="white")
     ax_snr.spines[:].set_color("#444")
-    ax_snr.legend(facecolor="#16213e", labelcolor="white", fontsize=8)
 
-    violations = int((~meets_target).sum())
-    fig.text(
-        0.5, 0.01,
-        f"SNR violations: {violations}/{n} nodes  |  Green = meets target  |  Red = needs improvement",
-        ha="center", color="#aaa", fontsize=8,
-    )
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Line2D([0], [0], color="#f1c40f", linestyle="--", label=f"Target {target_snr_db:.0f} dB"),
+        Patch(facecolor="#2ecc71", label="Meets SNR target"),
+        Patch(facecolor="#e74c3c", label="SNR violation"),
+    ]
+    if is_gibbs.any():
+        legend_handles.append(
+            Patch(facecolor="#f39c12", hatch="//", edgecolor="#f1c40f", label="GIBBS_STEP (SNR N/A)")
+        )
+    if is_calibration.any():
+        legend_handles.append(
+            Patch(facecolor="#f39c12", hatch="\\\\", edgecolor="#f1c40f", label="SAMPLE/NOISE (cal. error %)")
+        )
+    ax_snr.legend(handles=legend_handles, facecolor="#16213e", labelcolor="white", fontsize=7)
+
+    # Violation counts: exclude SNR-exempt nodes from SNR count
+    snr_violations = int((~meets_target & ~is_snr_exempt).sum())
+    cal_violations = int((~meets_cal & is_calibration).sum())
+    n_snr_nodes = int((~is_snr_exempt).sum())
+    n_cal_nodes = int(is_calibration.sum())
+
+    parts = [f"SNR violations: {snr_violations}/{n_snr_nodes}"]
+    if n_cal_nodes:
+        parts.append(f"Cal. violations: {cal_violations}/{n_cal_nodes}")
+    if is_gibbs.any():
+        parts.append("Gold // = thermodynamic (SNR N/A)")
+    fig.text(0.5, 0.01, "  |  ".join(parts), ha="center", color="#aaa", fontsize=8)
 
     plt.tight_layout(rect=[0, 0.04, 1, 1])
 

@@ -3,6 +3,7 @@
 import json
 import pytest
 
+from neuro_analog.analysis.taxonomy import AnalogTaxonomy, TaxonomyEntry
 from neuro_analog.ir.types import (
     Domain, OpType, NoiseSpec, PrecisionSpec, ArchitectureFamily,
     AnalogAmenabilityProfile, DynamicsProfile,
@@ -196,3 +197,134 @@ def test_make_activation_tanh_analog():
 def test_make_activation_silu_digital():
     n = make_activation_node("silu", 64, "silu")
     assert n.domain == Domain.DIGITAL
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AnalogTaxonomy — cross-architecture amenability
+# ──────────────────────────────────────────────────────────────────────
+
+def test_taxonomy_empty_table():
+    t = AnalogTaxonomy()
+    assert t.comparison_table() == "No profiles added to taxonomy."
+    assert t.rank_by_analog_amenability() == []
+
+
+def test_taxonomy_add_reference_profiles_families():
+    """add_reference_profiles() must populate all four reference families."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    families = {e.family for e in t.entries}
+    assert ArchitectureFamily.NEURAL_ODE in families
+    assert ArchitectureFamily.EBM in families
+    assert ArchitectureFamily.DEQ in families
+    assert ArchitectureFamily.TRANSFORMER in families
+
+
+def test_taxonomy_no_duplicate_neural_ode():
+    """Calling add_reference_profiles() twice must not create a second Neural ODE entry."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    t.add_reference_profiles()
+    neural_ode_entries = [e for e in t.entries if e.family == ArchitectureFamily.NEURAL_ODE]
+    assert len(neural_ode_entries) == 1
+
+
+def test_taxonomy_all_scores_bounded():
+    """Every profile overall_score and noise_score must lie in [0, 1]."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    for e in t.entries:
+        assert 0.0 <= e.profile.overall_score <= 1.0, (
+            f"{e.model_name} overall_score={e.profile.overall_score} out of bounds"
+        )
+        assert 0.0 <= e.profile.noise_score <= 1.0, (
+            f"{e.model_name} noise_score={e.profile.noise_score} out of bounds"
+        )
+
+
+def test_taxonomy_ranking_neural_ode_first():
+    """Core research claim: Neural ODE is the most analog-amenable architecture."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    ranked = t.rank_by_analog_amenability()
+    assert ranked[0].family == ArchitectureFamily.NEURAL_ODE
+
+
+def test_taxonomy_ranking_transformer_last():
+    """Transformer should rank below all dynamics-bearing architectures."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    ranked = t.rank_by_analog_amenability()
+    assert ranked[-1].family == ArchitectureFamily.TRANSFORMER
+
+
+def test_taxonomy_dynamics_annotations():
+    """DEQ must be annotated as dynamics-bearing; Transformer must not."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    by_family = {e.family: e for e in t.entries}
+    assert by_family[ArchitectureFamily.DEQ].has_native_dynamics is True
+    assert by_family[ArchitectureFamily.TRANSFORMER].has_native_dynamics is False
+
+
+def test_taxonomy_to_dict_serializable():
+    """to_dict() must be JSON-serializable and contain required fields."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    data = t.to_dict()
+    json_str = json.dumps(data)  # Must not raise
+    assert len(data) == 4
+    required_keys = {
+        "family", "model", "analog_flop_fraction", "da_boundary_count",
+        "has_dynamics", "noise_score", "overall_score",
+    }
+    for entry in data:
+        assert required_keys <= entry.keys(), f"Missing keys in {entry['family']}"
+
+
+def test_taxonomy_to_dict_round_trip():
+    """Scores survive JSON round-trip without precision loss."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    data = t.to_dict()
+    reloaded = json.loads(json.dumps(data))
+    for orig, rt in zip(data, reloaded):
+        assert abs(orig["overall_score"] - rt["overall_score"]) < 1e-9
+
+
+def test_taxonomy_save_load(tmp_path):
+    """save() writes valid JSON that can be loaded back."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    out = tmp_path / "taxonomy.json"
+    t.save(out)
+    loaded = json.loads(out.read_text())
+    assert len(loaded) == 4
+    families = {e["family"] for e in loaded}
+    assert "neural_ode" in families
+    assert "transformer" in families
+
+
+def test_taxonomy_comparison_table_contains_all_families():
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    table = t.comparison_table()
+    for family in (ArchitectureFamily.NEURAL_ODE, ArchitectureFamily.EBM,
+                   ArchitectureFamily.DEQ, ArchitectureFamily.TRANSFORMER):
+        assert family.value in table, f"{family.value} missing from comparison table"
+
+
+def test_taxonomy_ebm_high_analog_fraction():
+    """EBM reference profile must have analog_flop_fraction >= 0.9 (near-native compute)."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    ebm = next(e for e in t.entries if e.family == ArchitectureFamily.EBM)
+    assert ebm.profile.analog_flop_fraction >= 0.9
+
+
+def test_taxonomy_deq_low_da_boundaries():
+    """DEQ feedback loop stays analog — da_boundary_count should be ≤ 2."""
+    t = AnalogTaxonomy()
+    t.add_reference_profiles()
+    deq = next(e for e in t.entries if e.family == ArchitectureFamily.DEQ)
+    assert deq.profile.da_boundary_count <= 2
