@@ -38,3 +38,17 @@ class StochasticMapper:
                 node.noise = shot_noise
             elif node.op_type == OpType.SAMPLE:
                 node.noise = thermal_noise
+            elif node.op_type == OpType.GIBBS_STEP:
+                # DTCA thermodynamic sampler: thermal noise is the computational resource.
+                # Appendix K (Jelinčič et al. 2025): τ_rng ≈ 100 ns RNG flip time.
+                # Appendix E: E_rng ≈ 350 aJ per sampled bit.
+                # sigma=0.0 because SNR is not a meaningful metric here — thermal
+                # fluctuations are the desired randomness, not a calibration error.
+                node.noise = NoiseSpec(
+                    kind="thermal",
+                    sigma=0.0,
+                    bandwidth_hz=1.0 / 100e-9,  # 10 MHz from τ_rng = 100 ns
+                )
+                node.metadata.setdefault("tau_rng_ns", 100.0)   # Appendix K
+                node.metadata.setdefault("E_rng_aJ", 350.0)     # Appendix E
+                node.metadata["thermodynamic_sampler"] = True

@@ -50,10 +50,17 @@ class NoiseBudget:
     quantization_noise_variance: float = 0.0  # ADC/DAC quantization
     total_noise_variance: float = 0.0
 
-    # SNR
+    # SNR (undefined for stochastic-native nodes — use calibration_error instead)
     signal_rms: float = 1.0
     snr_db: float = float("inf")
     meets_target_snr: bool = True
+
+    # Calibration error for SAMPLE and NOISE_INJECTION nodes.
+    # These nodes intentionally inject noise — the metric is whether the actual σ
+    # matches the target σ, not whether noise is small relative to signal.
+    # calibration_error = |actual_σ - target_σ| / target_σ  (nan if no target_σ set)
+    calibration_error: float = float("nan")
+    meets_calibration: bool = True
 
     # SDE parameters (Wang & Achour §4.2 noise model)
     sde_diffusion_coeff: float = 0.0  # g in dx = f·dt + g·dW
@@ -109,6 +116,7 @@ def compute_noise_budget(
     temperature_K: float = 300.0,
     signal_rms: float = 1.0,
     target_snr_db: float = 40.0,
+    calibration_tolerance: float = 0.10,  # 10% relative error acceptable for stochastic nodes
     capacitance_F: float = HW_CAPACITANCE_F,
     bias_current_A: float = HW_BIAS_CURRENT_A,
     bandwidth_hz: float = HW_BANDWIDTH_HZ,
@@ -184,10 +192,31 @@ def compute_noise_budget(
             budget.sde_diffusion_coeff = math.sqrt(2.0 * thermal_var / max(tc, 1e-9))
 
         elif node.op_type in (OpType.NOISE_INJECTION, OpType.SAMPLE):
-            # Stochastic nodes: shot noise is the signal source
-            budget.shot_noise_variance = shot_var
-            budget.total_noise_variance = shot_var
-            budget.sde_diffusion_coeff = math.sqrt(shot_var)
+            # Stochastic-native nodes: noise is the intended signal, not a nonideality.
+            # SNR is therefore undefined (high SNR = node never fires = broken device).
+            # Correct metric: calibration error |actual_σ - target_σ| / target_σ.
+            #
+            # SAMPLE (p-bit/sMTJ): switching σ must equal sqrt(T) at operating point.
+            #   target_sigma set by EBMExtractor._build_rbm_graph() from cfg.temperature.
+            # NOISE_INJECTION (diffusion): injected σ must equal sqrt(β_t) per schedule.
+            #   target_sigma set by StableDiffusionExtractor.build_graph() from betas.
+            target_sigma = node.metadata.get("target_sigma")
+            actual_sigma = (node.noise.sigma if (node.noise and node.noise.sigma > 0)
+                            else math.sqrt(shot_var))
+            if target_sigma and target_sigma > 0:
+                budget.calibration_error = abs(actual_sigma - target_sigma) / target_sigma
+                budget.meets_calibration = budget.calibration_error < calibration_tolerance
+            budget.sde_diffusion_coeff = actual_sigma
+            budget.total_noise_variance = actual_sigma ** 2
+
+        elif node.op_type == OpType.GIBBS_STEP:
+            # DTCA subthreshold CMOS RNG (Jelinčič et al. 2025, §II.B, Fig. 3).
+            # Thermal noise IS the computation — not a nonideality to be minimized.
+            # Appendix E: E_rng ≈ 350 aJ/bit; Appendix K: τ_rng ≈ 100 ns.
+            # SDE diffusion coefficient scales with kT and τ_rng.
+            tau_rng_s = node.metadata.get("tau_rng_s", 100e-9)
+            budget.sde_diffusion_coeff = math.sqrt(K_B * temperature_K * tau_rng_s)
+            budget.total_noise_variance = 0.0  # SNR undefined for thermodynamic sampler
 
         elif node.op_type in (OpType.ACCUMULATION, OpType.SKIP_CONNECTION):
             # Current summation: shot noise from each branch
@@ -204,32 +233,63 @@ def compute_noise_budget(
             budget.thermal_noise_variance = thermal_var
             budget.total_noise_variance = thermal_var
 
-        # Compute SNR
-        budget.snr_db = _snr_db(signal_rms, budget.total_noise_variance)
-        budget.meets_target_snr = budget.snr_db >= target_snr_db
+        # SNR is undefined for stochastic-native nodes (noise IS the computation/signal).
+        # GIBBS_STEP: thermal noise drives Gibbs — calibration-free by circuit physics.
+        # SAMPLE / NOISE_INJECTION: intentional noise injection — use calibration_error.
+        if node.op_type in (OpType.GIBBS_STEP, OpType.NOISE_INJECTION, OpType.SAMPLE):
+            budget.snr_db = float("inf")
+            budget.meets_target_snr = True
+        else:
+            budget.snr_db = _snr_db(signal_rms, budget.total_noise_variance)
+            budget.meets_target_snr = budget.snr_db >= target_snr_db
         budgets[node.name] = budget
 
     return budgets
+
+
+_SNR_EXEMPT = frozenset({"GIBBS_STEP", "NOISE_INJECTION", "SAMPLE"})
 
 
 def noise_budget_summary(budgets: dict[str, NoiseBudget], target_snr_db: float = 40.0) -> str:
     """Generate a formatted noise budget report."""
     lines = [
         "THERMAL NOISE BUDGET",
-        "=" * 65,
-        f"Target SNR: {target_snr_db:.0f} dB",
+        "=" * 72,
+        f"Target SNR: {target_snr_db:.0f} dB  |  Calibration tolerance: 10%",
         f"kT/C (1pF, 300K): {math.sqrt(_thermal_noise_variance()):.2e} V_rms",
         "",
-        f"{'Node':<35} {'Type':<14} {'SNR (dB)':>9} {'OK?':>5} {'SDE g':>10}",
-        "─" * 77,
+        f"{'Node':<35} {'Type':<16} {'SNR/Cal':>9} {'OK?':>5} {'SDE g':>10}",
+        "─" * 79,
     ]
-    violations = 0
+    snr_violations = 0
+    cal_violations = 0
+    n_snr = 0
+    n_cal = 0
     for b in budgets.values():
-        ok = "✓" if b.meets_target_snr else "✗"
-        if not b.meets_target_snr:
-            violations += 1
         sde = f"{b.sde_diffusion_coeff:.2e}" if b.sde_diffusion_coeff > 0 else "—"
-        snr_str = f"{b.snr_db:.1f}" if b.snr_db != float("inf") else "∞"
-        lines.append(f"{b.node_name:<35} {b.op_type:<14} {snr_str:>9} {ok:>5} {sde:>10}")
-    lines += ["", f"SNR violations: {violations} / {len(budgets)} nodes"]
+        if b.op_type == "GIBBS_STEP":
+            metric_str = "thermo"
+            ok = "~"   # N/A — calibration-free by physics
+        elif b.op_type in ("NOISE_INJECTION", "SAMPLE"):
+            n_cal += 1
+            if not math.isnan(b.calibration_error):
+                metric_str = f"{b.calibration_error * 100:.1f}% err"
+                ok = "✓" if b.meets_calibration else "✗"
+                if not b.meets_calibration:
+                    cal_violations += 1
+            else:
+                metric_str = "no target"
+                ok = "?"
+        else:
+            n_snr += 1
+            metric_str = f"{b.snr_db:.1f}" if b.snr_db != float("inf") else "∞"
+            ok = "✓" if b.meets_target_snr else "✗"
+            if not b.meets_target_snr:
+                snr_violations += 1
+        lines.append(f"{b.node_name:<35} {b.op_type:<16} {metric_str:>9} {ok:>5} {sde:>10}")
+    lines += [
+        "",
+        f"SNR violations:         {snr_violations} / {n_snr} nodes",
+        f"Calibration violations: {cal_violations} / {n_cal} stochastic nodes",
+    ]
     return "\n".join(lines)
