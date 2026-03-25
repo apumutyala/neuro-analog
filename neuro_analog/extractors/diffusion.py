@@ -151,9 +151,17 @@ class StableDiffusionExtractor(BaseExtractor):
             flops=4*64*64,
             metadata={"description": "x_{t-1} = scaled_x0 + noise_component"},
         ))
+        # target_sigma for calibration error metric: √β at median timestep.
+        # The hardware TRNG must inject exactly √β_t per the forward process schedule;
+        # deviation by more than 10% miscalibrates the reverse SDE.
+        betas = (self.scheduler.betas.numpy()
+                 if hasattr(self.scheduler, "betas") else None)
+        target_sigma = float(np.sqrt(np.median(betas))) if betas is not None else 0.02
         graph.add_node(make_noise_node(
             "ode_update.noise", dim=4*64*64, noise_type="gaussian",
+            noise=None,  # StochasticMapper will set actual sigma
         ))
+        graph.get_node("ode_update.noise").metadata["target_sigma"] = target_sigma
         
         return graph
     

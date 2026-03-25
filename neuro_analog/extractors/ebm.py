@@ -43,6 +43,9 @@ class EBMConfig:
     hopfield_beta: float = 1.0    # Modern Hopfield retrieval gain
     use_analog_softmax: bool = False  # Use approximate analog softmax?
     model_type: str = "rbm"       # "rbm", "dbm", "hopfield", "extropic_dtm"
+    # DTM-specific (Jelinčič et al. 2025)
+    connectivity_degree: int = 12  # G_k neighbor count (Table II: G_12 is DTCA default)
+    gibbs_steps_K: int = 250       # Gibbs sweeps per denoising step (Appendix E calibration)
 
 
 class EBMExtractor(BaseExtractor):
@@ -87,6 +90,8 @@ class EBMExtractor(BaseExtractor):
 
     @property
     def family(self) -> ArchitectureFamily:
+        if self.config.model_type == "extropic_dtm":
+            return ArchitectureFamily.DTM
         return ArchitectureFamily.EBM
 
     def load_model(self) -> None:
@@ -95,6 +100,24 @@ class EBMExtractor(BaseExtractor):
 
     def extract_dynamics(self) -> DynamicsProfile:
         """EBM dynamics: energy minimization via Boltzmann/Gibbs sampling."""
+        cfg = self.config
+        if cfg.model_type == "extropic_dtm":
+            # DTCA: thermal noise is the computational resource, not a nonideality.
+            # dynamics_type="thermodynamic_gibbs" triggers noise_score=1.0 in compute_scores().
+            # Grid side L = sqrt(N); Appendix E: τ_rng ≈ 100 ns, E_rng ≈ 350 aJ/bit.
+            import math
+            L = int(math.isqrt(cfg.num_visible))
+            return DynamicsProfile(
+                has_dynamics=True,
+                dynamics_type="thermodynamic_gibbs",
+                is_stochastic=True,
+                grid_side_L=L,
+                connectivity_degree=cfg.connectivity_degree,
+                gibbs_steps_K=cfg.gibbs_steps_K,
+                denoising_steps_T=cfg.num_layers,
+                tau_rng_ns=100.0,       # Appendix K: τ_0 ≈ 100 ns decorrelation time
+                energy_per_sample_J=350e-18,  # Appendix E: ~350 aJ/bit (1 aJ = 1e-18 J)
+            )
         return DynamicsProfile(
             has_dynamics=True,
             dynamics_type="energy_minimization",
@@ -143,6 +166,10 @@ class EBMExtractor(BaseExtractor):
                 "temperature": cfg.temperature,
                 "hardware": "sMTJ (Extropic TSU) or subthreshold MOSFET",
                 "da_boundaries": 0,  # Fully analog — no ADC/DAC needed
+                # Calibration target: switching σ ∝ √T at the operating point.
+                # A p-bit requires the hardware noise level to match this so that
+                # P(x=1|h) = σ(h/T) holds — wrong σ biases the Boltzmann distribution.
+                "target_sigma": cfg.temperature ** 0.5,
             },
         ))
 
@@ -160,6 +187,7 @@ class EBMExtractor(BaseExtractor):
             metadata={
                 "description": "Visible unit sampling via p-bit",
                 "hardware": "sMTJ",
+                "target_sigma": cfg.temperature ** 0.5,
             },
         ))
 
@@ -236,47 +264,97 @@ class EBMExtractor(BaseExtractor):
         return graph
 
     def _build_dtm_graph(self, cfg: EBMConfig) -> AnalogGraph:
-        """Extropic DTM (Denoising Thermodynamic Model) — EBM denoising chain.
+        """Extropic DTCA (Denoising Thermodynamic Computer Architecture) — chromatic Gibbs chain.
 
-        Each denoising step is one EBM Gibbs iteration.
-        The chain of steps is a sequential analog pipeline.
+        Hardware model (Jelinčič et al. 2025, Section II):
+          - N = L×L binary spins on a 2D toroidal grid
+          - Sparse G_k connectivity: each spin couples to k neighbors via a resistor network
+            (no crossbar MVM — Kirchhoff current law on a sparse array, Appendix D Table II)
+          - Local field: h_i = Σ_{j∈N_k(i)} J_ij x_j  [ACCUMULATION via resistors]
+          - Bias injection: h_i += b_i  [RESISTOR_DAC, Appendix E]
+          - Stochastic update: x_i ~ Bernoulli(σ(2β(h_i + b_i)))  [GIBBS_STEP, Fig. 3]
 
-        No D/A boundaries within the chain — the p-bit outputs feed directly
-        into the next crossbar array's input lines.
+        Parameter count (symmetric Ising coupling):
+          - Edge weights: N × k / 2  (G_k sparse, not dense N×N)
+          - Biases: N per layer
+          Total: T × (N×k/2 + N)
+
+        No D/A boundaries within the chain (Section II.A: fully analog feedback path).
         """
+        import math
         n = cfg.num_visible
-        steps = cfg.num_layers
+        k = cfg.connectivity_degree   # G_k: k ∈ {8, 12, 16, 20, 24} (Appendix D, Table II)
+        steps = cfg.num_layers        # Denoising steps T
+
+        # Sparse G_k: N×k/2 coupling weights + N biases per layer
+        params_per_layer = n * k // 2 + n
+        total_params = steps * params_per_layer
 
         graph = AnalogGraph(
-            name=f"Extropic_DTM_{n}d_{steps}steps",
-            family=ArchitectureFamily.EBM,
-            model_params=n * n * steps,  # One weight matrix per denoising step
+            name=f"Extropic_DTM_N{n}_G{k}_T{steps}",
+            family=ArchitectureFamily.DTM,
+            model_params=total_params,
         )
 
         prev_id = None
         for step in range(steps):
-            # Energy evaluation: W·x (crossbar)
-            mvm_id = f"dtm.step{step}.energy_mvm"
-            graph.add_node(make_mvm_node(mvm_id, n, n))
-
-            # Stochastic sampling: p-bit
-            sample_id = f"dtm.step{step}.sample"
+            # Sparse G_k neighborhood field summation via resistor network
+            # (Kirchhoff's current law — no crossbar MVM needed for sparse connectivity)
+            field_id = f"dtm.step{step}.field_sum"
             graph.add_node(AnalogNode(
-                name=sample_id,
-                op_type=OpType.SAMPLE,
+                name=field_id,
+                op_type=OpType.ACCUMULATION,
+                domain=Domain.ANALOG,
+                input_shape=(n,), output_shape=(n,),
+                flops=n * k,  # Each of N spins sums k neighbors
+                metadata={
+                    "step": step,
+                    "description": f"Sparse G_{k} neighbor field: h_i = Σ_{{j∈N_k(i)}} J_ij x_j",
+                    "connectivity": f"G_{k}",
+                    "hardware": "Resistor network (Kirchhoff current law)",
+                    "da_boundaries": 0,
+                },
+            ))
+
+            # Bias injection from DAC-driven resistor (Appendix E)
+            bias_id = f"dtm.step{step}.bias_dac"
+            graph.add_node(AnalogNode(
+                name=bias_id,
+                op_type=OpType.RESISTOR_DAC,
+                domain=Domain.ANALOG,
+                input_shape=(n,), output_shape=(n,),
+                flops=n,
+                metadata={
+                    "step": step,
+                    "description": "Bias loading: h_i += b_i via DAC-driven resistor",
+                    "hardware": "Resistor DAC (Appendix E)",
+                    "params": n,
+                },
+            ))
+
+            # Chromatic Gibbs update: subthreshold CMOS RNG (Section II.B, Fig. 3)
+            # Appendix K: τ_rng ≈ 100 ns; Appendix E: E_rng ≈ 350 aJ/bit
+            gibbs_id = f"dtm.step{step}.gibbs_update"
+            graph.add_node(AnalogNode(
+                name=gibbs_id,
+                op_type=OpType.GIBBS_STEP,
                 domain=Domain.ANALOG,
                 input_shape=(n,), output_shape=(n,), flops=n,
                 metadata={
                     "step": step,
-                    "description": f"Denoising step {step}: p-bit sampling",
-                    "hardware": "sMTJ (Extropic TSU)",
+                    "description": f"Chromatic Gibbs: x_i ~ Bernoulli(σ(2β(h_i+b_i)))",
+                    "hardware": "Subthreshold CMOS RNG (DTCA §II.B, Fig. 3)",
+                    "tau_rng_ns": 100.0,     # Appendix K measurement
+                    "E_rng_aJ": 350.0,       # Appendix E energy model
                     "analog_feedback": True,
+                    "da_boundaries": 0,
                 },
             ))
 
-            graph.add_edge(mvm_id, sample_id)
+            graph.add_edge(field_id, bias_id)
+            graph.add_edge(bias_id, gibbs_id)
             if prev_id:
-                graph.add_edge(prev_id, mvm_id)
-            prev_id = sample_id
+                graph.add_edge(prev_id, field_id)
+            prev_id = gibbs_id
 
         return graph

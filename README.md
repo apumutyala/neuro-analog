@@ -175,4 +175,4 @@ Requires Ark, JAX, Diffrax, Equinox, Lineax (`pip install -e ".[jax]"`).
 - [`docs/experiments.md`](docs/experiments.md) — the 7 models, full results, complete vs. in-progress
 - [`docs/ark_export.md`](docs/ark_export.md) — Ark export pipeline, two paths, per-architecture status
 
-Full methodology and errata: [`experiments/cross_arch_tolerance/TECHNICAL_NOTE.md`](experiments/cross_arch_tolerance/TECHNICAL_NOTE.md)
+<!-- Full methodology and errata: [`experiments/cross_arch_tolerance/TECHNICAL_NOTE.md`](experiments/cross_arch_tolerance/TECHNICAL_NOTE.md) -->
