@@ -28,7 +28,7 @@ ssm = ["mamba-ssm>=1.0"]
 diffusion = ["diffusers>=0.25"]
 flow = ["diffusers>=0.28"]
 jax = ["jax>=0.4", "jaxlib>=0.4", "diffrax>=0.4"]
-full = ["mamba-ssm>=1.0", "diffusers>=0.28", "jax>=0.4", "jaxlib>=0.4", "diffrax>=0.4", "plotly>=5.18"]
+full = ["mamba-ssm>=1.0", "diffusers>=0.28", "plotly>=5.18"]
 dev = ["pytest>=7.0", "ruff>=0.1", "mypy>=1.7"]
 
 [tool.setuptools.packages.find]

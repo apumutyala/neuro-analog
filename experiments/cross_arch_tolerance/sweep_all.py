@@ -65,7 +65,7 @@ _SUBSTRATE_AWARE = {"diffusion", "neural_ode", "flow", "deq"}
 
 # All supported substrates per architecture (first = default, adds no filename suffix).
 _ALL_SUBSTRATES_BY_NAME = {
-    "diffusion":  ["classic", "cld", "extropic_dtm"],
+    "diffusion":  ["classic", "cld"],  # extropic_dtm excluded from 'all' — substrate broken, re-enable explicitly
     "neural_ode": ["euler", "rc_integrator"],
     "flow":       ["euler", "rc_integrator"],
     "deq":        ["discrete", "hopfield"],

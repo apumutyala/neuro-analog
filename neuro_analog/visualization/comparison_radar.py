@@ -31,6 +31,8 @@ _ARCH_COLORS = {
     ArchitectureFamily.FLOW: "#3498db",          # Blue
     ArchitectureFamily.TRANSFORMER: "#e67e22",   # Orange
     ArchitectureFamily.DIFFUSION: "#e74c3c",     # Red
+    ArchitectureFamily.DEQ: "#f39c12",           # Yellow-orange
+    ArchitectureFamily.DTM: "#fd79a8",           # Pink (Extropic thermodynamic)
 }
 
 _ARCH_NAMES = {
@@ -40,6 +42,8 @@ _ARCH_NAMES = {
     ArchitectureFamily.FLOW: "Flow (FLUX)",
     ArchitectureFamily.TRANSFORMER: "Transformer",
     ArchitectureFamily.DIFFUSION: "Diffusion (SD)",
+    ArchitectureFamily.DEQ: "DEQ",
+    ArchitectureFamily.DTM: "DTM (Extropic)",
 }
 
 AXES = [
@@ -163,22 +167,50 @@ def plot_radar_from_taxonomy(
     output_path: Optional[str | Path] = None,
 ) -> plt.Figure:
     """Convenience wrapper: build radar from an AnalogTaxonomy object."""
-    # Default Ark compatibility by architecture (1.0 = valid BaseAnalogCkt today)
+    # Ark compatibility — does the EXPERIMENT MODEL for this architecture produce a valid
+    # BaseAnalogCkt subclass today?  All experiment models are small MLPs so the CDG
+    # capacity constraint (which rules out 12B FLUX or 860M SD U-Net at production scale)
+    # does not apply here.
+    #
+    #   Neural ODE — export_neural_ode_to_ark()  → NeuralODEAnalogCkt  ✓
+    #   SSM (S4D)  — export_s4d_to_ark()         → SSMAnalogCkt        ✓ (real/imag split)
+    #   DEQ        — export_deq_to_ark()          → DEQAnalogCkt        ✓ (gradient-flow ODE)
+    #   EBM        — export_hopfield_to_ark()     → HopfieldAnalogCkt   ✓ (CDG bridge)
+    #   Diffusion  — export_diffusion_to_ark()    → DiffusionAnalogCkt  ✓ (VP-SDE prob-flow)
+    #   Flow (MLP) — FlowMLPExtractor → export_neural_ode_to_ark()      ✓ (velocity IS MLP)
+    #   Transformer— export_ffn_to_ark()          → analysis doc only   ✗ (no ODE dynamics;
+    #                softmax requires global comparison, no analog equivalent)
     default_ark = {
-        ArchitectureFamily.NEURAL_ODE: 1.0,   # Direct Ark input via export_neural_ode_to_ark
-        ArchitectureFamily.SSM: 0.75,          # ODE form; scale challenge
-        ArchitectureFamily.EBM: 0.4,           # Energy, not ODE
-        ArchitectureFamily.FLOW: 0.7,          # ODE form; v_θ scale challenge
-        ArchitectureFamily.TRANSFORMER: 0.2,   # No ODE form
-        ArchitectureFamily.DIFFUSION: 0.5,     # SDE; CLD maps well
+        ArchitectureFamily.NEURAL_ODE:  1.0,
+        ArchitectureFamily.SSM:         1.0,
+        ArchitectureFamily.DEQ:         1.0,
+        ArchitectureFamily.EBM:         1.0,
+        ArchitectureFamily.DIFFUSION:   1.0,
+        ArchitectureFamily.FLOW:        1.0,   # FlowMLP experiment model exports via neural_ode path
+        ArchitectureFamily.TRANSFORMER: 0.2,   # No ODE form; FFN partition is analysis-only
+        ArchitectureFamily.DTM:         0.0,   # Thermodynamic substrate (sMTJ Gibbs) has no ODE-form Ark export
     }
+    # Mismatch resilience — normalised from measured σ thresholds at 5% degradation.
+    # These are estimates pending a full rerun of the cross-arch sweep with bug fixes.
+    # Neural ODE: σ≈0.10–0.12 (small MLP, well-conditioned, easy calibration)
+    # DEQ:        σ≈0.10 (spectral norm enforces ρ<1 even under mismatch)
+    # EBM:        high (Hopfield energy landscape wide; noise just blurs attractor basins)
+    # SSM:        moderate (A_re decay structure helps, but B mismatch accumulates over sequence)
+    # Flow/Transformer: moderate (many NFE accumulate; large weight count)
+    # Diffusion:  lowest (100 NFE steps; each adds mismatch error; score net sensitive)
+    # DTM:        highest — thermal noise IS the desired randomness, not a nonideality (Jelinčič 2025)
+    # Mismatch resilience — measured σ threshold at 10% quality loss, normalized to [0,1]
+    # by dividing by 0.15 (max tested sigma). ≥0.15 ceiling architectures score 1.0.
+    # Source: cross_arch_tolerance sweep, 50 trials, conservative profile.
     default_mismatch = {
-        ArchitectureFamily.NEURAL_ODE: 0.9,   # Small params → easy calibration
-        ArchitectureFamily.SSM: 0.65,
-        ArchitectureFamily.EBM: 0.8,           # p-bits inherently stochastic
-        ArchitectureFamily.FLOW: 0.6,
-        ArchitectureFamily.TRANSFORMER: 0.55,
-        ArchitectureFamily.DIFFUSION: 0.45,    # Many noisy steps
+        ArchitectureFamily.NEURAL_ODE:  1.00,  # ≥σ=0.15 (no measurable threshold)
+        ArchitectureFamily.EBM:         1.00,  # ≥σ=0.15
+        ArchitectureFamily.SSM:         1.00,  # ≥σ=0.15
+        ArchitectureFamily.DIFFUSION:   1.00,  # ≥σ=0.15
+        ArchitectureFamily.TRANSFORMER: 1.00,  # ≥σ=0.15 (FFN-only analog partition)
+        ArchitectureFamily.DEQ:         0.67,  # σ=0.10 threshold
+        ArchitectureFamily.FLOW:        0.47,  # σ=0.07 threshold (mismatch-only ablation)
+        ArchitectureFamily.DTM:         1.0,   # Thermal noise is the computation — mismatch is by design
     }
 
     profiles_input = []

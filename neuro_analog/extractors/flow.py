@@ -18,6 +18,9 @@ Connection to Ark analog compiler:
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import numpy as np
 import torch
 
@@ -252,5 +255,97 @@ class FLUXExtractor(BaseExtractor):
             flops=64*32*32,
             metadata={"description": "x_{t+Δt} = x_t + Δt·v_θ via capacitor integration"},
         ))
-        
+
         return graph
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FlowMLPExtractor — small flow model targeted at Ark export
+# ──────────────────────────────────────────────────────────────────────
+
+class FlowMLPExtractor:
+    """Extract and export a small flow MLP to Ark's BaseAnalogCkt format.
+
+    Targets the cross-arch experiment flow model:
+        v_theta: [dim+1 → hidden → hidden → dim]  (time concatenated)
+        dx/dt = v_theta(x, t)   identical to Neural ODE in Ark's ode_fn
+
+    The Ark export is byte-for-byte identical to the Neural ODE export —
+    export_neural_ode_to_ark() already emits:
+        xt = jnp.concatenate([x, jnp.atleast_1d(t)])
+        h0 = jnp.tanh(W0 @ xt + b0)
+        ...
+    which IS the flow model forward pass.
+
+    Usage:
+        ext = FlowMLPExtractor(checkpoint_path)
+        ext.load_model()
+        code = ext.export_to_ark("outputs/flow_ark.py")
+        profile = ext.run()   # analog amenability profile
+    """
+
+    _EXP_DIR = (
+        Path(__file__).parent.parent.parent
+        / "experiments" / "cross_arch_tolerance"
+    )
+
+    def __init__(
+        self,
+        checkpoint_path: str | Path | None = None,
+        state_dim: int = 2,
+        t_span: tuple[float, float] = (0.0, 1.0),
+    ):
+        if checkpoint_path is None:
+            checkpoint_path = self._EXP_DIR / "checkpoints" / "flow.pt"
+        self.checkpoint_path = Path(checkpoint_path)
+        self.state_dim = state_dim
+        self.t_span = t_span
+        self._extractor = None
+
+    def load_model(self) -> None:
+        """Load the flow model checkpoint and wrap in a NeuralODEExtractor."""
+        from neuro_analog.extractors.neural_ode import NeuralODEExtractor
+
+        sys.path.insert(0, str(self._EXP_DIR))
+        from models import flow as flow_module  # type: ignore
+
+        if self.checkpoint_path.exists():
+            model = flow_module.load_model(str(self.checkpoint_path))
+            print(f"  Loaded flow checkpoint: {self.checkpoint_path}")
+        else:
+            print(f"  No checkpoint at {self.checkpoint_path} — training from scratch...")
+            model = flow_module.create_model()
+            self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            flow_module.train_model(model, str(self.checkpoint_path))
+            print(f"  Saved to: {self.checkpoint_path}")
+
+        self._extractor = NeuralODEExtractor.from_module(
+            model,
+            state_dim=self.state_dim,
+            t_span=self.t_span,
+            model_name="flow_mlp_make_moons",
+        )
+
+    def export_to_ark(
+        self,
+        output_path,
+        mismatch_sigma: float = 0.05,
+    ) -> str:
+        """Generate outputs/flow_ark.py — a valid Ark BaseAnalogCkt subclass.
+
+        Delegates entirely to export_neural_ode_to_ark() with class_name='FlowAnalogCkt'.
+        The ode_fn is identical: xt = cat([x, t]); return MLP(xt).
+        """
+        assert self._extractor is not None, "Call load_model() first"
+        from neuro_analog.extractors.neural_ode import export_neural_ode_to_ark
+        return export_neural_ode_to_ark(
+            self._extractor,
+            output_path,
+            mismatch_sigma=mismatch_sigma,
+            class_name="FlowAnalogCkt",
+        )
+
+    def run(self):
+        """Run the full analog amenability analysis pipeline."""
+        assert self._extractor is not None, "Call load_model() first"
+        return self._extractor.run()

@@ -57,18 +57,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import jax.numpy as jnp
 import numpy as np
-
-from ark.cdg.cdg import CDG
-from ark.specification.attribute_def import AttrDef, AttrDefMismatch
-from ark.specification.attribute_type import AnalogAttr, FunctionAttr
-from ark.specification.cdg_types import EdgeType, NodeType
-from ark.specification.production_rule import ProdRule
-from ark.specification.rule_keyword import DST, EDGE, SELF, SRC, VAR
-from ark.specification.specification import CDGSpec
-from ark.specification.trainable import TrainableMgr
-from ark.optimization.opt_compiler import OptCompiler
 
 
 # ── Spec factory ──────────────────────────────────────────────────────────────
@@ -84,12 +73,20 @@ def make_neural_ode_spec(mismatch_sigma: float = 0.0):
     Returns:
         (spec, StateVar, OutUnit, InpNode, MapEdge, FlowEdge)
     """
+    from ark.reduction import SUM
+    from ark.specification.attribute_def import AttrDef, AttrDefMismatch
+    from ark.specification.attribute_type import AnalogAttr, FunctionAttr
+    from ark.specification.cdg_types import EdgeType, NodeType
+    from ark.specification.production_rule import ProdRule
+    from ark.specification.rule_keyword import DST, EDGE, SELF, SRC, VAR
+    from ark.specification.specification import CDGSpec
     spec = CDGSpec("neural_ode")
 
     StateVar = NodeType(
         name="StateVar",
         attrs={
             "order": 1,
+            "reduction": SUM,
             "attr_def": {
                 "b": AttrDef(attr_type=AnalogAttr((-10, 10))),
             },
@@ -99,12 +96,13 @@ def make_neural_ode_spec(mismatch_sigma: float = 0.0):
         name="OutUnit",
         attrs={
             "order": 0,
+            "reduction": SUM,
             "attr_def": {
                 "act": AttrDef(attr_type=FunctionAttr(nargs=1)),
             },
         },
     )
-    InpNode = NodeType(name="InpNode", attrs={"order": 1})
+    InpNode = NodeType(name="InpNode", attrs={"order": 1, "reduction": SUM})
     MapEdge = EdgeType(name="MapEdge")
 
     if mismatch_sigma > 0.0:
@@ -161,6 +159,9 @@ def neural_ode_to_cdg(
     Returns:
         (cdg, spec, trainable_mgr, state_nodes, inp_nodes)
     """
+    import jax.numpy as jnp
+    from ark.cdg.cdg import CDG
+    from ark.specification.trainable import TrainableMgr
     spec, StateVar, OutUnit, InpNode, MapEdge, FlowEdge = make_neural_ode_spec(
         mismatch_sigma
     )
@@ -223,6 +224,7 @@ def compile_neural_ode_cdg(
     Returns:
         (CktClass, trainable_mgr)
     """
+    from ark.optimization.opt_compiler import OptCompiler
     cdg, spec, mgr, state_nodes, _ = neural_ode_to_cdg(J, b, K, mismatch_sigma)
 
     CktClass = OptCompiler().compile(

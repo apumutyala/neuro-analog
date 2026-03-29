@@ -49,7 +49,7 @@ y_q = clamp(y, -V_ref, V_ref)
 y_q = round(y_q · scale) / scale
 ```
 
-V_ref is set per-layer from calibration (max absolute activation). Hard quantization models inference behavior; Shem uses Gumbel-Softmax for differentiable training through discrete parameters.
+V_ref is set per-layer from calibration (max absolute activation). Hard quantization models inference behavior; Wang & Achour (arXiv:2411.03557) §4.3 uses Gumbel-Softmax for differentiable training through discrete parameters.
 
 ---
 
@@ -84,7 +84,7 @@ Two profiles bound the plausible range of quantization behavior:
 
 **Conservative** — ADC at every AnalogLinear output. Models current digital-analog hybrid chips (per-crossbar ADC, digital routing between arrays). Quantization compounds across depth × iterations.
 
-**Full-analog** — ADC only at the final readout layer. Models a true analog substrate (Shem/Ark target) where intermediate activations pass as continuous voltages. Mismatch and thermal noise still apply everywhere.
+**Full-analog** — ADC only at the final readout layer. Models a true analog substrate (Ark target) where intermediate activations pass as continuous voltages. Mismatch and thermal noise still apply everywhere.
 
 For iterative architectures (Neural ODE: ~40 solver steps, DEQ: ~30 fixed-point iterations, Diffusion: 100 DDPM steps), the profiles can produce very different results. Configure with `configure_analog_profile(model, profile='conservative' | 'full_analog')`.
 
@@ -141,7 +141,7 @@ Conductance cells have a fractional variance — a 10% mismatch means each cell 
 Fabrication mismatch is permanent. The same δ is re-used across all inferences to model a deployed chip. Monte Carlo trials resample δ to estimate the distribution over chips off a fabrication line.
 
 **Why hard quantization?**
-We simulate inference, not training. Shem uses Gumbel-Softmax for differentiable optimization through discrete ADC levels; our simulator uses deterministic rounding since we're measuring, not optimizing.
+We simulate inference, not training. Wang & Achour (arXiv:2411.03557) §4.3 uses Gumbel-Softmax for differentiable optimization through discrete ADC levels; our simulator uses deterministic rounding since we're measuring, not optimizing.
 
 **Why not simulate Softmax/LayerNorm in analog?**
 No practical analog circuit implements them efficiently. Softmax requires a normalization that touches all elements simultaneously; LayerNorm requires mean/variance computation. Both are computed digitally in current academic analog AI designs.

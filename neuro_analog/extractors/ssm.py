@@ -1007,3 +1007,67 @@ class Mamba2Extractor(MambaExtractor):
         graph.name = f"{self.model_name} (Mamba-2/SSD)"
         # TODO: Add SSD-specific chunked matmul decomposition
         return graph
+
+
+class S4DMLPExtractor:
+    """Extractor and Ark exporter for the S4D SSM in experiments/cross_arch_tolerance.
+
+    Targets _S4DLayer from _SSMClassifier (d_model=16, d_state=8, 2 layers).
+    Exports a single layer's continuous-time dynamics kernel as SSMAnalogCkt.
+
+    The continuous-time SSM kernel (real/imag split):
+        dh_re/dt = A_re * h_re - A_im * h_im
+        dh_im/dt = A_im * h_re + A_re * h_im
+    where A_re = -exp(log_A_real), A_im = log_A_imag.
+
+    Autonomous mode (u=0): exports the RC oscillator bank impulse response.
+    C and D matrices (readout) are embedded as non-trainable class attributes.
+
+    Usage:
+        ext = S4DMLPExtractor()
+        ext.load_model()
+        code = ext.export_to_ark("outputs/ssm_ark.py", mismatch_sigma=0.05)
+    """
+
+    _EXP_DIR = (
+        __import__("pathlib").Path(__file__).parent.parent.parent
+        / "experiments" / "cross_arch_tolerance"
+    )
+
+    def __init__(
+        self,
+        checkpoint_path=None,
+        d_model: int = 16,
+        d_state: int = 8,
+        layer_idx: int = 0,
+    ):
+        if checkpoint_path is None:
+            checkpoint_path = self._EXP_DIR / "checkpoints" / "ssm.pt"
+        self.checkpoint_path = __import__("pathlib").Path(checkpoint_path)
+        self.d_model = d_model
+        self.d_state = d_state
+        self.layer_idx = layer_idx
+        self.model = None
+
+    def load_model(self):
+        import sys
+        sys.path.insert(0, str(self._EXP_DIR))
+        import models.ssm as ssm_module
+        if self.checkpoint_path.exists():
+            self.model = ssm_module.load_model(str(self.checkpoint_path))
+        else:
+            self.model = ssm_module.create_model()
+            ssm_module.train_model(self.model, str(self.checkpoint_path))
+
+    def export_to_ark(self, output_path, mismatch_sigma: float = 0.05) -> str:
+        from neuro_analog.ark_bridge.ssm_cdg import export_s4d_to_ark
+        assert self.model is not None, "Call load_model() first"
+        layer = self.model.layers[self.layer_idx]
+        return export_s4d_to_ark(
+            s4d_layer=layer,
+            output_path=output_path,
+            mismatch_sigma=mismatch_sigma,
+            class_name="SSMAnalogCkt",
+            d_model=self.d_model,
+            d_state=self.d_state,
+        )

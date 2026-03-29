@@ -58,7 +58,7 @@ ti = TimeInfo(t0=0.0, t1=1.0, dt0=0.1, saveat=jnp.array([1.0]))
 result = ckt(ti, jnp.zeros(2), switch=jnp.array([]), args_seed=0, noise_seed=0)
 ```
 
-See `examples/04_ark_export.py` and `examples/03_ark_pipeline.py` for full walkthroughs.
+See `examples/03_ark_pipeline.py` (Neural ODE), `examples/10_deq_ark.py` (DEQ), and `examples/11_ssm_ark.py` (SSM) for full walkthroughs.
 
 ### Path 2 — CDG bridge (Hopfield / Cohen-Grossberg form only)
 

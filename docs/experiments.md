@@ -87,7 +87,7 @@ The two profiles don't just shift numbers — for EBM and DEQ they reverse the r
 | Diffusion | ≥15%† | ≥15% | Better — conservative ADC floor disappears entirely |
 | Others | ≥15% or similar | ≥15% or similar | Minimal change (no iterations to compound) |
 
-**Hardware interpretation:** Conservative = digital-analog hybrid chip (current ISSCC design point). Full-analog = true continuous analog substrate (Shem/Ark target).
+**Hardware interpretation:** Conservative = digital-analog hybrid chip (current ISSCC design point). Full-analog = true continuous analog substrate (Ark target).
 
 ### DEQ convergence note
 

@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 from neuro_analog.ir import (
     AnalogGraph, ArchitectureFamily, DynamicsProfile, OpType, Domain,
     AnalogNode, PrecisionSpec, make_mvm_node, make_activation_node,
@@ -202,6 +204,59 @@ class EBMExtractor(BaseExtractor):
         graph.get_node("rbm.W_fwd").metadata["analog_feedback_from"] = "rbm.p_bit_v"
 
         return graph
+
+    def export_to_ark(
+        self,
+        output_path,
+        mismatch_sigma: float = 0.05,
+        seed: int = 42,
+    ) -> str:
+        """Generate a standalone Ark BaseAnalogCkt for this EBM as a Hopfield ODE.
+
+        Reformulates the EBM as the Langevin mean-field ODE:
+            dx/dt = -x + tanh(W_sym @ x + b)
+
+        For theoretical models (no pretrained checkpoint), weights are drawn
+        from N(0, 1/n) — standard Hopfield random initialization.
+        Pass real trained weights via export_hopfield_to_ark() directly.
+
+        Supports model_type: 'hopfield', 'rbm'.
+        For 'extropic_dtm', use the thermodynamic substrate (not ODE form).
+        """
+        from neuro_analog.ark_bridge.ebm_cdg import (
+            export_hopfield_to_ark,
+            make_rbm_hopfield_weights,
+        )
+        rng = np.random.default_rng(seed)
+        cfg = self.config
+
+        if cfg.model_type == "hopfield":
+            n = cfg.num_visible
+            W = rng.standard_normal((n, n)) / np.sqrt(n)
+            np.fill_diagonal(W, 0.0)  # no self-connections (standard Hopfield)
+            b = np.zeros(n)
+            class_name = "HopfieldAnalogCkt"
+
+        elif cfg.model_type == "rbm":
+            n_v, n_h = cfg.num_visible, cfg.num_hidden
+            W_rbm = rng.standard_normal((n_h, n_v)) / np.sqrt(n_v)
+            b_v = np.zeros(n_v)
+            b_h = np.zeros(n_h)
+            W, b = make_rbm_hopfield_weights(W_rbm, b_v, b_h)
+            class_name = "RBMHopfieldAnalogCkt"
+
+        else:
+            raise ValueError(
+                f"model_type='{cfg.model_type}' cannot be exported as a Hopfield ODE. "
+                "Use 'hopfield' or 'rbm'. For 'extropic_dtm', the thermodynamic "
+                "substrate (sMTJ Gibbs sampling) has no ODE-form Ark export."
+            )
+
+        return export_hopfield_to_ark(
+            W, b, output_path,
+            mismatch_sigma=mismatch_sigma,
+            class_name=class_name,
+        )
 
     def _build_hopfield_graph(self, cfg: EBMConfig) -> AnalogGraph:
         """Modern Hopfield Network = transformer attention.
