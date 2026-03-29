@@ -228,3 +228,53 @@ class DEQExtractor(BaseExtractor):
 
         self._graph = graph
         return graph
+
+
+class DEQMLPExtractor:
+    """Extractor and Ark exporter for the DEQ in experiments/cross_arch_tolerance.
+
+    Targets _DEQClassifier: f_theta(z, x) = tanh(W_z @ z + W_x @ x + b_x)
+    with spectral-normalised W_z, z_dim=64, x_dim=64.
+
+    The gradient-flow ODE dz/dt = f_theta(z, x) - z settles to z* = f_theta(z*, x).
+
+    Usage:
+        ext = DEQMLPExtractor()
+        ext.load_model()
+        code = ext.export_to_ark("outputs/deq_ark.py", mismatch_sigma=0.05)
+    """
+
+    _EXP_DIR = (
+        __import__("pathlib").Path(__file__).parent.parent.parent
+        / "experiments" / "cross_arch_tolerance"
+    )
+
+    def __init__(self, checkpoint_path=None, z_dim: int = 64, x_dim: int = 64):
+        if checkpoint_path is None:
+            checkpoint_path = self._EXP_DIR / "checkpoints" / "deq.pt"
+        self.checkpoint_path = __import__("pathlib").Path(checkpoint_path)
+        self.z_dim = z_dim
+        self.x_dim = x_dim
+        self.model = None
+
+    def load_model(self):
+        import sys
+        sys.path.insert(0, str(self._EXP_DIR))
+        import models.deq as deq_module
+        if self.checkpoint_path.exists():
+            self.model = deq_module.load_model(str(self.checkpoint_path))
+        else:
+            self.model = deq_module.create_model()
+            deq_module.train_model(self.model, str(self.checkpoint_path))
+
+    def export_to_ark(self, output_path, mismatch_sigma: float = 0.05) -> str:
+        from neuro_analog.ark_bridge.deq_cdg import export_deq_to_ark
+        assert self.model is not None, "Call load_model() first"
+        return export_deq_to_ark(
+            deq_model=self.model,
+            output_path=output_path,
+            mismatch_sigma=mismatch_sigma,
+            class_name="DEQAnalogCkt",
+            z_dim=self.z_dim,
+            x_dim=self.x_dim,
+        )

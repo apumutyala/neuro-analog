@@ -16,7 +16,7 @@ Physical model (four noise sources applied in order):
    b_device = b_nominal * δ_b,   δ_b ~ N(1, σ_mismatch²)  — per output neuron
    Same δ persists across all forward passes — it is baked into the
    fabricated conductance values of the RRAM/PCM cells. This is the
-   Shem §4.1 formulation: θ' = δ ◦ θ, δ ~ N(1, σ²·I).
+   Wang & Achour (arXiv:2411.03557) §4.1 formulation: θ' = δ ◦ θ, δ ~ N(1, σ²·I).
    Bias is implemented as a constant current source; its W/L mismatch
    follows the same N(1, σ²) model as the weight cells.
 
@@ -29,7 +29,7 @@ Physical model (four noise sources applied in order):
    column currents. If each column wire contributes independent
    Johnson-Nyquist noise with variance kT/C (one capacitor per wire),
    the total output noise variance is N · kT/C, giving σ = sqrt(N·kT/C).
-   Reference: Legno §4 noise model; Shem §4.2 SDE diffusion term g(x,θ,t).
+   Reference: Legno §4 noise model; Wang & Achour (arXiv:2411.03557) §4.2 SDE diffusion term g(x,θ,t).
 
    Note: The sqrt(in_features) factor assumes independent
    per-column noise sources. An alternative model puts all thermal noise
@@ -44,7 +44,7 @@ Physical model (four noise sources applied in order):
 
    V_ref is per-layer from calibration (max absolute activation value).
    At n_bits >= 32, this is numerically identical to the unquantized output.
-   Source: Shem §4.3 models DAC levels via Gumbel-Softmax for training;
+   Source: Wang & Achour (arXiv:2411.03557) §4.3 models DAC levels via Gumbel-Softmax for training;
    we use hard quantization since we simulate inference, not training.
 """
 

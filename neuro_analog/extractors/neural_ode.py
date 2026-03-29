@@ -719,9 +719,16 @@ def export_neural_ode_to_ark(
     extractor,
     output_path,
     mismatch_sigma: float = 0.05,
+    class_name: str = "NeuralODEAnalogCkt",
 ) -> str:
     """Generate an Ark-compatible BaseAnalogCkt subclass from a NeuralODEExtractor.
     Full parameter flattening with static offsets for Ark's OptCompiler format.
+
+    Args:
+        extractor:       NeuralODEExtractor (or FlowMLPExtractor) with model loaded.
+        output_path:     path to write the generated .py file.
+        mismatch_sigma:  per-weight relative mismatch std for make_args().
+        class_name:      name of the generated BaseAnalogCkt subclass.
     """
     import torch.nn as nn
     from pathlib import Path
@@ -753,9 +760,9 @@ def export_neural_ode_to_ark(
     import numpy as _np
     shapes = []
     for idx, (name, linear) in enumerate(linear_layers):
-        shapes.append(linear.weight.detach().float().numpy().shape)
+        shapes.append(linear.weight.detach().cpu().float().numpy().shape)
         if linear.bias is not None:
-            shapes.append(linear.bias.detach().float().numpy().shape)
+            shapes.append(linear.bias.detach().cpu().float().numpy().shape)
     offsets = []
     _off = 0
     for s in shapes:
@@ -770,7 +777,7 @@ def export_neural_ode_to_ark(
         f"",
         f"Usage:",
         f"    from ark.optimization.base_module import TimeInfo",
-        f"    ckt = NeuralODEAnalogCkt()",
+        f"    ckt = {class_name}()",
         f"    time_info = TimeInfo(t0={t0}, t1={t1}, dt0=0.01, saveat=jnp.array([{t1}]))",
         f"    result = ckt(time_info, x0, switch=jnp.array([]), args_seed=42, noise_seed=43)",
         f'"""',
@@ -781,8 +788,8 @@ def export_neural_ode_to_ark(
         f"import diffrax",
         f"from ark.optimization.base_module import BaseAnalogCkt, TimeInfo",
         f"",
-        f"class NeuralODEAnalogCkt(BaseAnalogCkt):",
-        f'    """Neural ODE analog circuit (BaseAnalogCkt subclass).',
+        f"class {class_name}(BaseAnalogCkt):",
+        f'    """Analog circuit — {class_name} (BaseAnalogCkt subclass).',
         f"",
         f"    a_trainable holds all MLP weights concatenated flat.",
         f"    make_args applies multiplicative mismatch (delta ~ N(1, sigma^2))",
@@ -797,8 +804,8 @@ def export_neural_ode_to_ark(
 
     shapes_reset = []  # rebuild for the loop below
     for idx, (name, linear) in enumerate(linear_layers):
-        W = linear.weight.detach().float().numpy()
-        b = linear.bias.detach().float().numpy() if linear.bias is not None else None
+        W = linear.weight.detach().cpu().float().numpy()
+        b = linear.bias.detach().cpu().float().numpy() if linear.bias is not None else None
 
         lines.append(f"        _W{idx} = jnp.array({W.tolist()})")
         lines.append(f"        arrays.append(_W{idx}.flatten())")
@@ -879,7 +886,7 @@ def export_neural_ode_to_ark(
         f"        return y[-1]",
         f"",
         f"if __name__ == '__main__':",
-        f"    ckt = NeuralODEAnalogCkt()",
+        f"    ckt = {class_name}()",
         f"    time_info = TimeInfo(t0={t0}, t1={t1}, dt0=0.01, saveat=jnp.array([{t1}]))",
         f"    x0 = jnp.zeros(({state_dim},))",
         f"    switch = jnp.array([])",

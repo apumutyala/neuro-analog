@@ -46,10 +46,22 @@ def run_pipeline(
     extractor = extractor_class.from_module(model, state_dim=getattr(model, 'state_dim', 2)) if hasattr(extractor_class, 'from_module') else extractor_class(model_name)
     if not hasattr(extractor_class, 'from_module'):
         extractor.model = model
-        
+
     profile = extractor.run()
     graph = extractor.graph
-    
+
+    # Hardware noise annotation — attach NoiseSpec to each analog node by op type.
+    # Each mapper skips nodes that don't match its target op types, so all three
+    # can always be applied regardless of architecture family.
+    from neuro_analog.mappers.crossbar import CrossbarMapper
+    from neuro_analog.mappers.integrator import IntegratorMapper
+    from neuro_analog.mappers.stochastic import StochasticMapper
+    CrossbarMapper().annotate_graph(graph)
+    IntegratorMapper().annotate_graph(graph)
+    StochasticMapper().annotate_graph(graph)
+    annotated = sum(1 for n in graph.nodes if n.noise is not None)
+    print(f"      Hardware noise annotated: {annotated}/{graph.node_count} nodes")
+
     ode_system = None
     if family in ["neural_ode", "ssm"]:
         ode_system = extractor.extract_ode_system()
@@ -76,9 +88,11 @@ def run_pipeline(
         ark_path = str(output_path / f"{model_name}_ark.py")
         export_neural_ode_to_ark(extractor, ark_path, mismatch_sigma=0.05)
     elif family == "ssm":
-        from neuro_analog.ir.ark_export import export_ssm_to_ark
-        ark_path = str(output_path / f"{model_name}_ark.py")
-        export_ssm_to_ark(graph, extractor, ark_path, mismatch_sigma=0.05)
+        # Use S4DMLPExtractor directly for SSM — it embeds real trained weights.
+        # The generic pipeline does not carry a reference to the raw _S4DLayer,
+        # so SSM ark export should be done via S4DMLPExtractor.export_to_ark()
+        # (see examples/11_ssm_ark.py).
+        pass
 
     print(f"--- PIPELINE DONE ---")
     return PipelineResult(
