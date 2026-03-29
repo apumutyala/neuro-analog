@@ -107,6 +107,84 @@ class AnalogTaxonomy:
         if not any(e.family == ArchitectureFamily.NEURAL_ODE for e in self.entries):
             self.add_neural_ode_profile()
 
+        # SSM reference (S4D / Mamba structure)
+        ssm_profile = AnalogAmenabilityProfile(
+            architecture=ArchitectureFamily.SSM,
+            model_name="Reference SSM (S4D)",
+            model_params=0,
+            analog_flop_fraction=0.88,
+            digital_flop_fraction=0.12,
+            da_boundary_count=2,  # Input DAC + final ADC; recurrence scan is fully analog
+            min_weight_precision_bits=4,
+            dynamics=DynamicsProfile(
+                has_dynamics=True,
+                dynamics_type="LTI_ODE",
+                is_stochastic=False,
+                state_dimension=64,
+            ),
+        )
+        ssm_profile.compute_scores()
+        self.add_profile(
+            ssm_profile,
+            has_native_dynamics=True,
+            dynamics_description="h_{t+1} = A·h_t + B·x_t  [diagonal A → N independent RC circuits]",
+            analog_circuit_primitive="RC bank (diagonal A eigenvalues → time constants τ_i = 1/|a_i|)",
+            key_digital_bottleneck="B/C/D crossbar MVM at boundaries; LayerNorm around SSM blocks",
+            analog_compiler_fit="Strong — diagonal scan maps to RC integrators; export_s4d_to_ark() works today",
+        )
+
+        # Flow reference (MLP velocity field — experiment model exports; FLUX is analysis-only)
+        flow_profile = AnalogAmenabilityProfile(
+            architecture=ArchitectureFamily.FLOW,
+            model_name="Reference Flow (MLP velocity)",
+            model_params=0,
+            analog_flop_fraction=0.80,
+            digital_flop_fraction=0.20,
+            da_boundary_count=4,  # Input DAC + per-NFE ADC/DAC crossings (4 typical)
+            min_weight_precision_bits=4,
+            dynamics=DynamicsProfile(
+                has_dynamics=True,
+                dynamics_type="time_varying_ODE",
+                is_stochastic=False,
+                num_function_evaluations=4,
+            ),
+        )
+        flow_profile.compute_scores()
+        self.add_profile(
+            flow_profile,
+            has_native_dynamics=True,
+            dynamics_description="dx/dt = v_θ(x, t)  [MLP velocity field; same format as Neural ODE]",
+            analog_circuit_primitive="Crossbar MVM + RC integrator (identical to Neural ODE path)",
+            key_digital_bottleneck="Adaptive NFE controller; FLUX v_θ is 12B MMDiT (too large for fixed CDG)",
+            analog_compiler_fit="MLP velocity field: full BaseAnalogCkt via neural_ode path. FLUX: analysis-only.",
+        )
+
+        # Diffusion reference (VP-SDE reverse process)
+        diffusion_profile = AnalogAmenabilityProfile(
+            architecture=ArchitectureFamily.DIFFUSION,
+            model_name="Reference Diffusion (VP-SDE)",
+            model_params=0,
+            analog_flop_fraction=0.70,
+            digital_flop_fraction=0.30,
+            da_boundary_count=8,   # Conservative: ~2 boundaries/step × several representative steps
+            min_weight_precision_bits=6,
+            dynamics=DynamicsProfile(
+                has_dynamics=True,
+                dynamics_type="SDE",
+                is_stochastic=True,
+                num_diffusion_steps=100,
+            ),
+        )
+        diffusion_profile.compute_scores()
+        self.add_profile(
+            diffusion_profile,
+            has_native_dynamics=True,
+            dynamics_description="VP-SDE reverse: dx = [-½β(t)x - β(t)∇logp_t(x)]dt + √β(t)dw̃",
+            analog_circuit_primitive="Programmable gain (β schedule) + crossbar score net + TRNG noise",
+            key_digital_bottleneck="GroupNorm/AdaLN in score net; 100-step accumulation of mismatch error",
+            analog_compiler_fit="Experiment model: BaseAnalogCkt via export_diffusion_to_ark(). SD U-Net 860M: analysis-only.",
+        )
+
         # EBM reference (from Extropic DTM paper + Boltzmann machine theory)
         ebm_profile = AnalogAmenabilityProfile(
             architecture=ArchitectureFamily.EBM,
@@ -116,6 +194,11 @@ class AnalogTaxonomy:
             digital_flop_fraction=0.05,
             da_boundary_count=2,  # Input DAC + output ADC only
             min_weight_precision_bits=4,
+            dynamics=DynamicsProfile(
+                has_dynamics=True,
+                dynamics_type="energy_minimization",
+                is_stochastic=True,   # Gibbs sampling requires TRNG
+            ),
         )
         ebm_profile.compute_scores()
         

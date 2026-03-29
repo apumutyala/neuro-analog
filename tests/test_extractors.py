@@ -128,25 +128,28 @@ class TestArkExport:
 
     def test_ssm_export_syntactically_valid(self, tmp_path):
         import ast
-        from neuro_analog.ir.ark_export import export_ssm_to_ark
-        from neuro_analog.ir.types import DynamicsProfile
-        g = AnalogGraph("test_ssm", ArchitectureFamily.SSM)
-        g.set_dynamics(DynamicsProfile(
-            has_dynamics=True,
-            dynamics_type="LTI_ODE",
-            time_constants=[1e-3, 2e-3, 5e-3, 1e-2],
-            time_constant_spread=10.0,
-            state_dimension=4,
-        ))
+        import torch
+        import torch.nn as nn
+        from neuro_analog.ark_bridge.ssm_cdg import export_s4d_to_ark
+
+        class FakeS4DLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.log_A_real = nn.Parameter(torch.zeros(4))
+                self.log_A_imag = nn.Parameter(torch.zeros(4))
+                self.B = nn.Linear(8, 8, bias=False)
+                self.C = nn.Linear(8, 8, bias=False)
+                self.D = nn.Linear(8, 8, bias=False)
+
         output = tmp_path / "ssm_ark.py"
-        code = export_ssm_to_ark(g, None, output)  # extractor=None → B/C fall back to jnp.ones
+        code = export_s4d_to_ark(FakeS4DLayer(), output, d_model=8, d_state=4)
         ast.parse(code)
         assert "jrandom.normal" in code
         assert "diffrax" in code
 
     def test_flow_export_has_diffrax(self, tmp_path):
         import ast
-        from neuro_analog.ir.ark_export import export_flow_to_ark
+        from neuro_analog.ark_bridge.flow_cdg import export_flow_to_ark
         from neuro_analog.ir.types import DynamicsProfile
         g = AnalogGraph("flux_test", ArchitectureFamily.FLOW)
         g.set_dynamics(DynamicsProfile(

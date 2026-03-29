@@ -1,0 +1,70 @@
+{
+  "sigma": 0.05,
+  "n_trials": 20,
+  "baseline": -0.23876722157001495,
+  "layers": {
+    "layers.0": {
+      "type": "_S4DLayer",
+      "mean": -0.23881147876381875,
+      "std": 0.00011769505762632543,
+      "normalized_mean": 1.0001853570750323,
+      "degradation": -0.0001853570750323108
+    },
+    "layers.0.B": {
+      "type": "AnalogLinear",
+      "mean": -0.23876772373914718,
+      "std": 0.00014711511229284442,
+      "normalized_mean": 1.0000021031745017,
+      "degradation": -2.103174501666416e-06
+    },
+    "layers.0.C": {
+      "type": "AnalogLinear",
+      "mean": -0.23875875920057296,
+      "std": 0.00016869985384201732,
+      "normalized_mean": 0.9999645580771668,
+      "degradation": 3.544192283322367e-05
+    },
+    "layers.0.D": {
+      "type": "AnalogLinear",
+      "mean": -0.23864650055766107,
+      "std": 0.00036466299402242066,
+      "normalized_mean": 0.9994943987220688,
+      "degradation": 0.0005056012779312002
+    },
+    "layers.1": {
+      "type": "_S4DLayer",
+      "mean": -0.23875917866826057,
+      "std": 0.0001024112785062588,
+      "normalized_mean": 0.9999663148831675,
+      "degradation": 3.3685116832549156e-05
+    },
+    "layers.1.B": {
+      "type": "AnalogLinear",
+      "mean": -0.2387439228594303,
+      "std": 0.0001277004593724922,
+      "normalized_mean": 0.9999024208162601,
+      "degradation": 9.757918373987096e-05
+    },
+    "layers.1.C": {
+      "type": "AnalogLinear",
+      "mean": -0.23873973786830902,
+      "std": 6.892142067606134e-05,
+      "normalized_mean": 0.9998848933219342,
+      "degradation": 0.00011510667806580166
+    },
+    "layers.1.D": {
+      "type": "AnalogLinear",
+      "mean": -0.23879157453775407,
+      "std": 0.00035018155588367197,
+      "normalized_mean": 1.0001019946020187,
+      "degradation": -0.00010199460201865129
+    },
+    "head": {
+      "type": "AnalogLinear",
+      "mean": -0.23896051496267318,
+      "std": 0.0007817153290091991,
+      "normalized_mean": 1.0008095474386611,
+      "degradation": -0.000809547438661129
+    }
+  }
+}

@@ -214,8 +214,8 @@ def main(n: int = 2, sigma: float = 0.05) -> None:
     from neuro_analog.ark_bridge import compile_neural_ode_cdg
 
     model = NeuralODE.load("outputs/neural_ode_run/model.pt")
-    J = model.cell.linear.weight.detach().numpy()
-    b = model.cell.linear.bias.detach().numpy()
+    J = model.cell.linear.weight.detach().cpu().numpy()
+    b = model.cell.linear.bias.detach().cpu().numpy()
 
     CktClass, mgr = compile_neural_ode_cdg(J, b, mismatch_sigma=0.05)
     import diffrax

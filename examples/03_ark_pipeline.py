@@ -47,6 +47,9 @@ from neuro_analog.simulator import (
 )
 from neuro_analog.extractors.neural_ode import NeuralODEExtractor, export_neural_ode_to_ark
 from neuro_analog.analysis.taxonomy import AnalogTaxonomy
+from neuro_analog.mappers.crossbar import CrossbarMapper
+from neuro_analog.mappers.integrator import IntegratorMapper
+from neuro_analog.visualization.comparison_radar import plot_radar_from_taxonomy
 from models import neural_ode as neural_ode_module
 
 _CKPT = _EXP_DIR / "checkpoints" / "neural_ode.pt"
@@ -127,6 +130,12 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
     extractor.load_model()
     profile = extractor.run()
 
+    # Annotate graph with hardware noise specs (CrossbarSpec defaults: 8-bit RRAM,
+    # IntegratorSpec defaults: 1 ms RC, 250 kHz BW, kT/C thermal model).
+    graph = extractor.graph
+    CrossbarMapper().annotate_graph(graph)
+    IntegratorMapper().annotate_graph(graph)
+
     taxonomy = AnalogTaxonomy()
     taxonomy.add_profile(
         profile,
@@ -136,6 +145,9 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
         key_digital_bottleneck="Adaptive step-size controller (digital bookkeeping only)",
         analog_compiler_fit="Perfect — dx/dt = f_θ(x,t) IS Ark's input format",
     )
+    # Populate reference profiles for all other architectures so the radar
+    # shows the full cross-architecture comparison, not just Neural ODE.
+    taxonomy.add_reference_profiles()
 
     counts = count_analog_vs_digital(analogize(model, sigma_mismatch=0.0, n_adc_bits=n_adc_bits))
     print(f"  Amenability score:  {profile.overall_score:.3f}")
@@ -145,6 +157,25 @@ def main(sigma: float = 0.10, n_adc_bits: int = 8, n_trials: int = 20):
           f"({counts['coverage_pct']:.0f}% param coverage)")
     print(f"  Digital layers:     {counts['digital_layers']}")
     print(f"  Ark compiler fit:   PERFECT")
+
+    # Hardware noise annotations on the IR graph
+    print()
+    print("  Hardware noise model (HCDCv2 defaults):")
+    from neuro_analog.ir.types import OpType
+    for node in graph.nodes:
+        if node.noise is not None:
+            tag = f"{node.op_type.name:<16}"
+            print(f"    {node.name:<30} {tag}  σ={node.noise.sigma:.3e}"
+                  + (f"  BW={node.noise.bandwidth_hz/1e3:.0f} kHz" if node.noise.bandwidth_hz else ""))
+
+    # Cross-architecture comparison table
+    print()
+    print(taxonomy.comparison_table())
+
+    # Radar chart — all 6 architectures, all 6 axes including Ark compatibility
+    radar_path = _OUT / "analog_amenability_radar.png"
+    plot_radar_from_taxonomy(taxonomy, output_path=radar_path)
+    print(f"\n  Radar chart:        {radar_path}")
 
     # ── Step 4: Ark export ─────────────────────────────────────────────────────
     sep("STEP 4 / 4  Ark Export")

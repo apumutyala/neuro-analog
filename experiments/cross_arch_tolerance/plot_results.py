@@ -363,7 +363,7 @@ def plot_figure5():
                     z0 = torch.randn(200, 2)
                     t_span = torch.tensor([0.0, 1.0])
                     model.eval()
-                    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().numpy()
+                    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().cpu().numpy()
                     ax.scatter(x_gen[:, 0], x_gen[:, 1], s=3, alpha=0.6,
                                c=_COLORS[arch_name], rasterized=True)
                     ax.set_xlim(-3, 3); ax.set_ylim(-3, 3)
@@ -398,7 +398,7 @@ def plot_figure5():
                                 x = _math.sqrt(a_n)*x0p + _math.sqrt(1-a_n)*eps
                             else:
                                 x = x0p
-                    img = x.detach().numpy().reshape(8, 8)
+                    img = x.detach().cpu().numpy().reshape(8, 8)
                     ax.imshow(img, cmap="gray", vmin=-1, vmax=1)
                     ax.axis("on"); ax.set_xticks([]); ax.set_yticks([])
 
@@ -412,7 +412,7 @@ def plot_figure5():
                             h = model.h_given_v(v)
                             h_s = (h > torch.rand_like(h)).float()
                             v = model.v_given_h(h_s)
-                    img = v.detach().numpy().reshape(8, 8)
+                    img = v.detach().cpu().numpy().reshape(8, 8)
                     ax.imshow(img, cmap="gray", vmin=0, vmax=1)
                     ax.axis("on"); ax.set_xticks([]); ax.set_yticks([])
 

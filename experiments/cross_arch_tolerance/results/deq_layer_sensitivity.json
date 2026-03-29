@@ -1,0 +1,35 @@
+{
+  "sigma": 0.05,
+  "n_trials": 20,
+  "baseline": -0.5241053104400635,
+  "layers": {
+    "W_z": {
+      "type": "AnalogLinear",
+      "mean": -0.5252875864505768,
+      "std": 0.004322174324678839,
+      "normalized_mean": 1.0022557985713227,
+      "degradation": -0.0022557985713227424
+    },
+    "W_x": {
+      "type": "AnalogLinear",
+      "mean": -0.5297572821378708,
+      "std": 0.006051670867361313,
+      "normalized_mean": 1.0107840382175515,
+      "degradation": -0.010784038217551473
+    },
+    "readout": {
+      "type": "AnalogLinear",
+      "mean": -0.5238022565841675,
+      "std": 0.0015691376492740076,
+      "normalized_mean": 0.9994217691561996,
+      "degradation": 0.0005782308438003758
+    },
+    "act": {
+      "type": "AnalogTanh",
+      "mean": -0.5266672074794769,
+      "std": 0.008112883511624003,
+      "normalized_mean": 1.0048881340989702,
+      "degradation": -0.004888134098970154
+    }
+  }
+}

@@ -16,6 +16,14 @@ pip install -e ".[dev]"
 
 Optional extras: `[ssm]` for Mamba extraction, `[jax]` for Diffrax evaluation, `[full]` for everything.
 
+**Ark export** (`ark_bridge/`, `evaluate_in_ark.py`) requires Ark. Install order matters — torch before JAX:
+
+```bash
+apt-get install -y graphviz
+git clone https://github.com/WangYuNeng/Ark.git
+cd Ark && pip install -r requirement_torch.txt && pip install -r requirement.txt && pip install -e .
+```
+
 ---
 
 ## Quick start
@@ -46,17 +54,15 @@ The goal is to establish empirical baselines for which architectures are worth c
 
 | Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits |
 |---|---|---|---|
-| EBM | ≥ 15% | mismatch | 2 |
-| SSM | ≥ 15% | mismatch | 4 |
-| Transformer | ≥ 15% | mismatch | 4 |
-| Neural ODE | ≥ 15% | mismatch | 2 |
-| Diffusion | ≥ 15%† | quantization | N/A† |
-| DEQ | 12% | mismatch | **6** |
-| Flow | 10% | mismatch | 2 |
+| Neural ODE | ≥ 15% | negligible | 2 |
+| EBM | ≥ 15% | negligible | 4 |
+| SSM | ≥ 15% | negligible | 4 |
+| Diffusion | ≥ 15% | negligible | 4 |
+| Transformer | ≥ 15% | negligible | 4 |
+| DEQ | 10% | mismatch | **6** |
+| Flow | 7% | mismatch | 2 |
 
-†Diffusion is mismatch-immune but quantization-limited under the conservative profile (per-layer ADC × 100 DDPM steps creates a constant ~15% quality floor regardless of bit-width). Resolves completely under the full-analog profile.
-
-**Key finding (conservative):** Mismatch is the dominant noise source across 6/7 architectures. Flow and DEQ are the most sensitive, breaking down at σ=10% and σ=12% respectively. Five architectures remain robust to ≥15% mismatch within the 10% quality loss bound.
+**Key finding (conservative):** Five architectures show no measurable degradation up to σ=15%. Flow and DEQ are the only architectures with identifiable mismatch thresholds within the tested range: Flow breaks down at σ=7% and DEQ at σ=10%, both mismatch-dominated. All other noise sources (thermal, quantization) are negligible at demo-scale layer widths.
 
 ### Figures (conservative profile)
 
@@ -83,15 +89,15 @@ Full-analog defers ADC to the final readout only, removing per-layer quantizatio
 
 | Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits |
 |---|---|---|---|
-| SSM | ≥ 15% | mismatch | 2 |
-| Transformer | ≥ 15% | mismatch | 2 |
-| Neural ODE | ≥ 15% | mismatch | 2 |
-| Flow | ≥ 15% | mismatch | 2 |
-| Diffusion | ≥ 15% | mismatch | 2 |
-| DEQ | 15% | mismatch | **4** |
-| EBM | 10% | mismatch | **4** |
+| Neural ODE | ≥ 15% | negligible | 2 |
+| SSM | ≥ 15% | negligible | 4 |
+| Diffusion | ≥ 15% | negligible | 4 |
+| Transformer | ≥ 15% | negligible | 2 |
+| EBM | ≥ 15% | negligible | 4 |
+| DEQ | 10% | mismatch | **4** |
+| Flow | 5% | mismatch | 2 |
 
-**Key finding (full-analog):** The simulation profile can reverse the architecture ranking, not just shift numbers. Five architectures are unaffected by the switch. EBM drops from ≥15% to a 10% threshold — per-step ADC binarization was inadvertently reinforcing the binary nature of Gibbs sampling; removing it exposes accumulated mismatch across 100 Gibbs steps. DEQ improves from 12% to a 15% threshold and drops its minimum ADC requirement from 6 to 4 bits — per-iteration ADC was creating fixed-point limit cycles that disappear when quantization is deferred to readout. Diffusion resolves completely: the constant ~15% quality floor from per-layer ADC × 100 DDPM steps disappears and 2-bit readout ADC is sufficient. Thermal noise remains negligible across all 7 at C=1pF / demo-scale layer widths.
+**Key finding (full-analog):** Removing per-layer ADC does not change the ranking — mismatch remains the only meaningful failure mode, and only in Flow and DEQ. DEQ drops its minimum ADC requirement from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. Flow's threshold tightens from 7% to 5% under full-analog, suggesting per-layer quantization was inadvertently regularizing the velocity field. All five remaining architectures are unaffected by the profile switch.
 
 ### Figures (full-analog profile)
 
@@ -139,12 +145,16 @@ python sweep_all.py --only diffusion --analog-substrate cld
 
 neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24) via two export paths:
 
-**Path 1 — Direct code generation** (`neuro_analog/ir/ark_export.py`): Reads weights from the extracted `ODESystem` or `AnalogGraph` and emits a Python/JAX file containing a `BaseAnalogCkt` subclass with `make_args`, `ode_fn`, `noise_fn`, and `readout` implemented. The generated file is immediately runnable by Ark's `OptCompiler` and trains with the adjoint method via JAX/Diffrax.
+**Path 1 — Direct code generation** (`neuro_analog/ark_bridge/`): Reads trained weights from a PyTorch model and emits a Python/JAX file containing a `BaseAnalogCkt` subclass with `make_args`, `ode_fn`, `noise_fn`, and `readout` implemented. The generated file is immediately runnable by Ark's `OptCompiler` and trains with the adjoint method via JAX/Diffrax.
 
 ```bash
-python examples/04_ark_export.py              # Neural ODE (default)
-python examples/04_ark_export.py --arch ssm   # SSM
-python examples/04_ark_export.py --arch deq   # DEQ
+python examples/03_ark_pipeline.py           # Neural ODE — full sweep + Ark export
+python examples/06_ebm_ark.py               # EBM (Hopfield) — CDG bridge + Ark export
+python examples/07_flow_ark.py              # Flow — MLP velocity field export
+python examples/08_diffusion_ark.py         # Diffusion — VP-SDE probability flow ODE
+python examples/09_transformer_ffn_ark.py   # Transformer FFN — crossbar partition
+python examples/10_deq_ark.py              # DEQ — gradient flow fixed-point ODE
+python examples/11_ssm_ark.py              # SSM — S4D real/imag split dynamics
 ```
 
 **Path 2 — CDG bridge** (`neuro_analog/ark_bridge/neural_ode_cdg.py`): Converts Neural ODE weights in Hopfield/Cohen-Grossberg normal form (dx/dt = −x + J·tanh(x) + b + K·u) to a proper Ark `CDGSpec` → `CDG` → `OptCompiler` → `BaseAnalogCkt` subclass. This uses Ark's full compiler pipeline with typed node/edge production rules, per-weight `TrainableMgr` registration, and optional mismatch tagging.
@@ -158,12 +168,12 @@ python examples/05_cdg_bridge.py --n 4 --sigma 0.10
 | Architecture | Export tier | Generated class | Notes |
 |---|---|---|---|
 | Neural ODE | Runnable `BaseAnalogCkt` | `NeuralODEAnalogCkt` | Two paths: direct + CDG bridge |
-| SSM / Mamba | Runnable `BaseAnalogCkt` | `SSMAnalogCkt` | Direct path only; diagonal A → RC bank |
+| SSM (S4D) | Runnable `BaseAnalogCkt` | `SSMAnalogCkt` | Real/imag split; diagonal A → RC bank |
 | DEQ | Runnable `BaseAnalogCkt` | `DEQAnalogCkt` | Fixed-point → ODE form (dz/dt = f−z) |
-| Flow | Analysis document | `FlowODE` (plain class) | v_θ is 12B params, not a fixed ODE |
-| Diffusion | Analysis document | `DiffusionDynamics` (plain class) | 100-step SDE schedule |
-| Transformer | Not exported | — | No native ODE; Softmax is digital |
-| EBM | Not exported | — | Gibbs sampling → p-bit, no ODE form |
+| Diffusion | Runnable `BaseAnalogCkt` | `DiffusionAnalogCkt` | VP-SDE probability flow ODE |
+| EBM (Hopfield) | Runnable `BaseAnalogCkt` | `HopfieldAnalogCkt` | CDG bridge path |
+| Flow (FLUX) | Analysis document | `FlowODE` (plain class) | v_θ is 12B params, not a fixed ODE |
+| Transformer | Analysis document | — | FFN crossbar partition; softmax stays digital |
 
 Requires Ark, JAX, Diffrax, Equinox, Lineax (`pip install -e ".[jax]"`).
 

@@ -1,0 +1,112 @@
+{
+  "sigma": 0.05,
+  "n_trials": 20,
+  "baseline": -0.23874826729297638,
+  "layers": {
+    "layers.0.attn.q": {
+      "type": "AnalogLinear",
+      "mean": -0.23874907642602922,
+      "std": 2.477311442660366e-05,
+      "normalized_mean": 1.0000033890635607,
+      "degradation": -3.3890635606770303e-06
+    },
+    "layers.0.attn.k": {
+      "type": "AnalogLinear",
+      "mean": -0.2387390986084938,
+      "std": 4.207297465356613e-05,
+      "normalized_mean": 0.9999615968543498,
+      "degradation": 3.840314565017877e-05
+    },
+    "layers.0.attn.v": {
+      "type": "AnalogLinear",
+      "mean": -0.2387622483074665,
+      "std": 9.998560182864014e-05,
+      "normalized_mean": 1.0000585596479867,
+      "degradation": -5.855964798673341e-05
+    },
+    "layers.0.attn.out": {
+      "type": "AnalogLinear",
+      "mean": -0.23879074901342393,
+      "std": 8.133583765077087e-05,
+      "normalized_mean": 1.0001779351989826,
+      "degradation": -0.0001779351989825706
+    },
+    "layers.0.ffn.fc1": {
+      "type": "AnalogLinear",
+      "mean": -0.23875598162412642,
+      "std": 3.6155626184638465e-05,
+      "normalized_mean": 1.0000323115691583,
+      "degradation": -3.231156915828315e-05
+    },
+    "layers.0.ffn.act": {
+      "type": "AnalogReLU",
+      "mean": -0.23876855596899987,
+      "std": 4.594621212357516e-05,
+      "normalized_mean": 1.0000849793644726,
+      "degradation": -8.497936447260379e-05
+    },
+    "layers.0.ffn.fc2": {
+      "type": "AnalogLinear",
+      "mean": -0.2387496367096901,
+      "std": 2.712805358779582e-05,
+      "normalized_mean": 1.0000057358184387,
+      "degradation": -5.735818438656892e-06
+    },
+    "layers.1.attn.q": {
+      "type": "AnalogLinear",
+      "mean": -0.2387496717274189,
+      "std": 1.064750466400164e-05,
+      "normalized_mean": 1.0000058824906184,
+      "degradation": -5.882490618391856e-06
+    },
+    "layers.1.attn.k": {
+      "type": "AnalogLinear",
+      "mean": -0.23874654695391656,
+      "std": 1.2158522532437695e-05,
+      "normalized_mean": 0.9999927943390781,
+      "degradation": 7.205660921938417e-06
+    },
+    "layers.1.attn.v": {
+      "type": "AnalogLinear",
+      "mean": -0.2387406088411808,
+      "std": 4.98761953662488e-05,
+      "normalized_mean": 0.9999679224821927,
+      "degradation": 3.207751780731627e-05
+    },
+    "layers.1.attn.out": {
+      "type": "AnalogLinear",
+      "mean": -0.238761318475008,
+      "std": 6.806867726813505e-05,
+      "normalized_mean": 1.0000546650335083,
+      "degradation": -5.466503350826102e-05
+    },
+    "layers.1.ffn.fc1": {
+      "type": "AnalogLinear",
+      "mean": -0.23876032382249832,
+      "std": 3.5961326111928684e-05,
+      "normalized_mean": 1.000050498919463,
+      "degradation": -5.0498919462960146e-05
+    },
+    "layers.1.ffn.act": {
+      "type": "AnalogReLU",
+      "mean": -0.2387703999876976,
+      "std": 2.6789143356111443e-05,
+      "normalized_mean": 1.0000927030590512,
+      "degradation": -9.270305905118015e-05
+    },
+    "layers.1.ffn.fc2": {
+      "type": "AnalogLinear",
+      "mean": -0.23874690234661103,
+      "std": 2.855264234358153e-05,
+      "normalized_mean": 0.9999942829056695,
+      "degradation": 5.717094330504047e-06
+    },
+    "head": {
+      "type": "AnalogLinear",
+      "mean": -0.23873012512922287,
+      "std": 0.00013996417244689852,
+      "normalized_mean": 0.9999240113280854,
+      "degradation": 7.598867191460634e-05
+    }
+  }
+}

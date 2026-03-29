@@ -1,12 +1,12 @@
 """
 Fabrication mismatch propagation — Nonideality #1.
 
-Shem models static mismatch as multiplicative perturbation:
+Wang & Achour (arXiv:2411.03557) model static mismatch as multiplicative perturbation:
     δ ~ N(1, σ²·I)   applied element-wise to each analog parameter.
 
-Reference from Shem paper:
+Reference:
     σ=0.10 degrades CNN edge-detection from MSE 0.042 → 0.555.
-    After Shem's mismatch-aware optimization: MSE 0.027 (below perfect-hardware baseline).
+    After mismatch-aware optimization: MSE 0.027 (below perfect-hardware baseline).
 
 Our contribution: propagate this same model through NEURAL NETWORK weight matrices,
 predicting how much output error each layer introduces under fabrication variation.
@@ -148,13 +148,13 @@ def propagate_mismatch(
       - MVM: Monte-Carlo relative output error under δ ~ N(1, σ²)
       - INTEGRATION/DECAY: time constant shift and accumulated phase error
 
-    Connects to Shem: σ=0.10 is Shem's default. The report tells hardware
+    σ=0.10 is the canonical mismatch level from Wang & Achour (arXiv:2411.03557). The report tells hardware
     designers which layers need tighter fab control (<σ=0.05) and which
     can tolerate loose matching (σ≈0.20 acceptable for first FFN layer).
 
     Args:
         graph: AnalogGraph from any extractor.
-        sigma: Fabrication mismatch level. Shem default = 0.10 (10%).
+        sigma: Fabrication mismatch level. 0.10 (10%) is the canonical reference value.
         num_samples: Monte-Carlo samples per node.
         seed: RNG seed for reproducibility.
 
