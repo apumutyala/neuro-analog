@@ -31,4 +31,5 @@ htmlcov/
 Thumbs.db
 
 # Data / checkpoints (large files, reproduce via scripts)
+data/
 experiments/*/data/
