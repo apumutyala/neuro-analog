@@ -41,7 +41,7 @@ _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ── Dataset ───────────────────────────────────────────────────────────────
 
 _VIS = 64
-_HID = 32
+_HID = 128  # was 32 — too small to capture MNIST structure
 
 def _load_mnist_8x8_binary(split="train", n=None):
     try:
@@ -152,9 +152,10 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
     X_train = X_train.to(_DEVICE)
     model = model.to(_DEVICE)
-    lr = 0.01
-    batch_size = 64
-    n_epochs = 500
+    lr = 0.005  # was 0.01 — lower lr more stable for CD
+    batch_size = 128  # was 64 — larger batch for better gradient estimates
+    n_epochs = 2000   # was 500 — need more passes for 128-hidden RBM
+    k_cd = 5          # was 1 (CD-1) — CD-5 less biased negative phase
     model.train()
 
     for epoch in range(n_epochs):
@@ -162,7 +163,12 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
         v_pos = X_train[idx]
         h_prob_pos = model.h_given_v(v_pos)
         h_sample = (h_prob_pos > torch.rand_like(h_prob_pos)).float()
+        # CD-k: run k Gibbs steps for negative phase
         v_neg = model.v_given_h(h_sample)
+        for _ in range(k_cd - 1):
+            h_neg = model.h_given_v(v_neg)
+            h_neg_s = (h_neg > torch.rand_like(h_neg)).float()
+            v_neg = model.v_given_h(h_neg_s)
         h_prob_neg = model.h_given_v(v_neg)
 
         # CD-1 weight gradient: <v h>_data - <v h>_model
@@ -175,7 +181,7 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
             model.W_fwd.bias.data += lr * (h_prob_pos.mean(0) - h_prob_neg.mean(0))
             model.W_bwd.bias.data += lr * (v_pos.mean(0) - v_neg.mean(0))
 
-        if (epoch + 1) % 100 == 0:
+        if (epoch + 1) % 200 == 0:
             recon_err = evaluate(model)
             model.train()  # evaluate() sets eval mode; restore for continued training
             print(f"  [EBM] epoch {epoch+1}/{n_epochs}: neg_nn_dist={recon_err:.4f}")

@@ -92,9 +92,12 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
     X_train = X_train.to(_DEVICE)
     model = model.to(_DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
     batch_size = 256
-    n_epochs = 2000
+    n_epochs = 5000
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_epochs, eta_min=1e-6
+    )
     model.train()
 
     for epoch in range(n_epochs):
@@ -108,8 +111,9 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
-        if (epoch + 1) % 100 == 0:
+        if (epoch + 1) % 500 == 0:
             print(f"  [Flow] epoch {epoch+1}/{n_epochs}: loss={loss.item():.4f}")
 
     torch.save(model.state_dict(), save_path)
@@ -151,7 +155,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
 
     model = model.to(_DEVICE)
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma).detach().cpu().numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.01, noise_sigma=noise_sigma).detach().cpu().numpy()
     test_np = X_test.cpu().numpy()
 
     if _HAS_SCIPY:
@@ -186,7 +190,7 @@ def evaluate_sliced_wasserstein(model: nn.Module, n_projections: int = 50, seed:
 
     model = model.to(_DEVICE)
     model.eval()
-    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().cpu().numpy()
+    x_gen = analog_odeint(model, z0, t_span, dt=0.01).detach().cpu().numpy()
     test_np = X_test.cpu().numpy()
 
     rng = np.random.default_rng(seed)
@@ -217,8 +221,8 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
     digital_baseline.eval()
 
     noise_sigma = _SIGMA_RC if analog_substrate == "rc_integrator" else 0.0
-    dig_samples = analog_odeint(digital_baseline, z0, t_span, dt=0.25, noise_sigma=0.0)
-    analog_samples = analog_odeint(model, z0, t_span, dt=0.25, noise_sigma=noise_sigma)
+    dig_samples = analog_odeint(digital_baseline, z0, t_span, dt=0.01, noise_sigma=0.0)
+    analog_samples = analog_odeint(model, z0, t_span, dt=0.01, noise_sigma=noise_sigma)
     
     mse = ((dig_samples.detach() - analog_samples.detach()) ** 2).mean().item()
     return -mse

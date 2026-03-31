@@ -93,19 +93,22 @@ class _TimeAugMLP(nn.Module):
 # ── Standard interface ─────────────────────────────────────────────────────
 
 def create_model() -> nn.Module:
-    return _TimeAugMLP(dim=2, hidden=20)  # Reduced from 64 to operate near capacity
+    return _TimeAugMLP(dim=2, hidden=64)  # 2882 params — sufficient for 2D CNF on circles
 
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:
     X_train, _ = _get_data()
     X_train = X_train.to(_DEVICE)
     model = model.to(_DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=3e-4)
     t_span = torch.tensor([1.0, 0.0])  # backward integration for density
     n_steps = 40
     dt = 1.0 / n_steps
     batch_size = 256
-    n_epochs = 300
+    n_epochs = 2000
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_epochs, eta_min=1e-5
+    )
 
     model.train()
     for epoch in range(n_epochs):
@@ -125,8 +128,9 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
         nll.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         optimizer.step()
+        scheduler.step()
 
-        if (epoch + 1) % 100 == 0:
+        if (epoch + 1) % 200 == 0:
             print(f"  [NeuralODE] epoch {epoch+1}/{n_epochs}: NLL={nll.item():.4f}")
 
     torch.save(model.state_dict(), save_path)

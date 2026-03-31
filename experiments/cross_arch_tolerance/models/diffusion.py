@@ -144,7 +144,10 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
 
     optimizer = optim.Adam(model.parameters(), lr=2e-4)
     batch_size = 256
-    n_epochs = 400
+    n_epochs = 5000
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_epochs, eta_min=1e-6
+    )
     model.train()
 
     for epoch in range(n_epochs):
@@ -159,8 +162,9 @@ def train_model(model: nn.Module, save_path: str) -> nn.Module:
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
-        if (epoch + 1) % 100 == 0:
+        if (epoch + 1) % 500 == 0:
             print(f"  [Diffusion] epoch {epoch+1}/{n_epochs}: loss={loss.item():.4f}")
 
     torch.save(model.state_dict(), save_path)
