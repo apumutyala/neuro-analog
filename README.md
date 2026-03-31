@@ -64,7 +64,11 @@ The goal is to establish empirical baselines for which architectures are worth c
 
 **Key finding (conservative):** Five architectures show no measurable degradation up to σ=15%. Flow and DEQ are the only architectures with identifiable mismatch thresholds within the tested range: Flow breaks down at σ=7% and DEQ at σ=10%, both mismatch-dominated. All other noise sources (thermal, quantization) are negligible at demo-scale layer widths.
 
+> **Reproducibility note:** DEQ (10%) and SSM/Transformer (≥15%) results are from fully reproducible sweeps on stable checkpoints. Neural ODE, EBM, and Diffusion model configurations were updated after the initial sweep run (hidden size and training hyperparameter changes); their ≥15% thresholds are directionally valid as lower bounds but have not been re-swept on the updated checkpoints. Flow (7%) used a revised ODE integration step (dt 0.25→0.01) in the current codebase; the threshold direction is expected to hold but the exact value is provisional. All results will be refreshed on next retraining.
+
 ### Figures (conservative profile)
+
+> **Figure note:** Figures reflect sweep data from the initial checkpoint run. Curves for Neural ODE, EBM, and Diffusion correspond to the prior model configurations (see reproducibility note above). DEQ and SSM/Transformer curves are current. Figures will be regenerated after retraining.
 
 <table>
 <tr>
@@ -73,7 +77,7 @@ The goal is to establish empirical baselines for which architectures are worth c
 </tr>
 <tr>
 <td><img src="experiments/cross_arch_tolerance/figures/fig3_adc_precision.png" width="340"/><br><sub>Fig 3 — ADC bit-width sweep</sub></td>
-<td><img src="experiments/cross_arch_tolerance/figures/fig4_deq_convergence.png" width="340"/><br><sub>Fig 4 — DEQ convergence failure rate</sub></td>
+<td><img src="experiments/cross_arch_tolerance/figures/fig4_deq_convergence.png" width="340"/><br><sub>Fig 4 — DEQ convergence failure rate (100% rate is a metric artifact — see note below)</sub></td>
 </tr>
 <tr>
 <td><img src="experiments/cross_arch_tolerance/figures/fig5_visual_results.png" width="340"/><br><sub>Fig 5 — Generated sample quality vs σ</sub></td>
@@ -81,31 +85,27 @@ The goal is to establish empirical baselines for which architectures are worth c
 </tr>
 </table>
 
+**Fig 4 note — DEQ convergence "100% failure rate":** This is a measurement artifact, not a real failure. The convergence check uses tol=1e-4 on a 64-dim vector (per-element threshold ~1.5×10⁻⁵), which is never satisfied in 30 unroll steps at any σ — including σ=0 with a perfectly trained model. The DEQ achieves ~93% test accuracy; spectral norm on W_z guarantees the fixed point exists and is unique. The figure correctly shows that the failure rate is *flat across all σ* (structural — not noise-induced), which is the actual finding.
+
 ---
 
-### Results (50 trials, full-analog profile)
+### Results (50 trials, full-analog profile) — Preliminary
 
-Full-analog defers ADC to the final readout only, removing per-layer quantization boundaries. For architectures compiled to crossbar arrays where a single output digitization step is feasible, this is the more realistic operating point.
+> **Preliminary:** Full-analog results share the same sweep run as the conservative profile above and carry the same reproducibility caveats. Numbers for Neural ODE, EBM, Diffusion, and Flow are directional only and will be updated on re-sweep.
 
-| Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits |
+Full-analog defers ADC to the final readout only, removing per-layer quantization boundaries. For architectures compiled to crossbar arrays where a single output digitization step is feasible, this is the more physically realistic operating point.
+
+| Architecture | σ threshold @ 10% loss | Min ADC bits | Status |
 |---|---|---|---|
-| Neural ODE | ≥ 15% | negligible | 2 |
-| SSM | ≥ 15% | negligible | 4 |
-| Diffusion | ≥ 15% | negligible | 4 |
-| Transformer | ≥ 15% | negligible | 2 |
-| EBM | ≥ 15% | negligible | 4 |
-| DEQ | 10% | mismatch | **4** |
-| Flow | 5% | mismatch | 2 |
+| Neural ODE | ≥ 15% | 2 | Preliminary |
+| SSM | ≥ 15% | 4 | Current |
+| Diffusion | ≥ 15% | 4 | Preliminary |
+| Transformer | ≥ 15% | 2 | Current |
+| EBM | ≥ 15% | 4 | Preliminary |
+| DEQ | 10% | **4** | Current |
+| Flow | 5% | 2 | Provisional |
 
-**Key finding (full-analog):** Removing per-layer ADC does not change the ranking — mismatch remains the only meaningful failure mode, and only in Flow and DEQ. DEQ drops its minimum ADC requirement from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. Flow's threshold tightens from 7% to 5% under full-analog, suggesting per-layer quantization was inadvertently regularizing the velocity field. All five remaining architectures are unaffected by the profile switch.
-
-### Figures (full-analog profile)
-
-<table>
-<tr>
-<td><img src="experiments/cross_arch_tolerance/figures/fig7_profile_comparison.png" width="700"/><br><sub>Fig 7 — Conservative vs. full-analog profile comparison across all 7 architectures</sub></td>
-</tr>
-</table>
+**Key finding (full-analog):** Removing per-layer ADC does not change the ranking — mismatch remains the dominant failure mode, only in Flow and DEQ. DEQ's ADC requirement drops from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. Flow's threshold tightens from 7% to 5%, suggesting per-layer quantization was inadvertently regularizing the velocity field.
 
 ---
 
@@ -119,7 +119,7 @@ Full-analog defers ADC to the final readout only, removing per-layer quantizatio
 | **Operating range** | Partial | Output saturation at ±V_ref (1V); activation swing clipping (AnalogTanh ±0.95, AnalogSigmoid [0.025, 0.975]). IR drop along crossbar rows not modeled |
 | **Frequency / bandwidth** | Not modeled | No settling time, RC bandwidth limits, 1/f noise, or clock-rate vs. precision tradeoff |
 
-Out of scope: PCM/RRAM conductance drift over time, multi-layer nonideality coupling. See [TECHNICAL_NOTE.md](experiments/cross_arch_tolerance/TECHNICAL_NOTE.md) §4.1.
+Out of scope: PCM/RRAM conductance drift over time, multi-layer nonideality coupling.
 
 ---
 
@@ -127,10 +127,12 @@ Out of scope: PCM/RRAM conductance drift over time, multi-layer nonideality coup
 
 ```bash
 cd experiments/cross_arch_tolerance
-python train_all.py          # train all 7 models (~20 min CPU)
-python sweep_all.py          # run all sweeps (~90 min CPU, 50 trials)
-python plot_results.py       # generate figures
+python train_all.py          # train all 7 models (CPU: ~2–4 hrs with updated configs; GPU: ~3 min)
+python sweep_all.py          # run all sweeps (~90 min CPU, 50 trials; requires trained checkpoints)
+python plot_results.py       # generate figures from sweep results
 ```
+
+> **Note:** Model training times increased significantly after architecture/hyperparameter updates (Flow: 5000 epochs, Diffusion: 5000 epochs, EBM: 2000 epochs with CD-5). GPU recommended. The quickstart example (`examples/01_quickstart.py`) trains its own small model and runs in ~2 min on CPU with no checkpoints required.
 
 Single architecture, faster:
 
@@ -143,7 +145,7 @@ python sweep_all.py --only diffusion --analog-substrate cld
 
 ## Ark integration
 
-neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24) via two export paths:
+neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24) via two export paths. The CDG bridge mirrors the node/edge/production-rule structure from Wang & Achour (Ark, ASPLOS '24) — each exported file is a valid `BaseAnalogCkt` subclass immediately runnable by `OptCompiler`.
 
 **Path 1 — Direct code generation** (`neuro_analog/ark_bridge/`): Reads trained weights from a PyTorch model and emits a Python/JAX file containing a `BaseAnalogCkt` subclass with `make_args`, `ode_fn`, `noise_fn`, and `readout` implemented. The generated file is immediately runnable by Ark's `OptCompiler` and trains with the adjoint method via JAX/Diffrax.
 
@@ -172,17 +174,7 @@ python examples/05_cdg_bridge.py --n 4 --sigma 0.10
 | DEQ | Runnable `BaseAnalogCkt` | `DEQAnalogCkt` | Fixed-point → ODE form (dz/dt = f−z) |
 | Diffusion | Runnable `BaseAnalogCkt` | `DiffusionAnalogCkt` | VP-SDE probability flow ODE |
 | EBM (Hopfield) | Runnable `BaseAnalogCkt` | `HopfieldAnalogCkt` | CDG bridge path |
-| Flow (FLUX) | Analysis document | `FlowODE` (plain class) | v_θ is 12B params, not a fixed ODE |
-| Transformer | Analysis document | — | FFN crossbar partition; softmax stays digital |
+| Flow | Analysis document | `FlowODE` (plain class) | Velocity field MLP; no fixed-point ODE structure for CDG mapping |
+| Transformer | Analysis document | — | FFN crossbar partition; attention softmax stays digital |
 
 Requires Ark, JAX, Diffrax, Equinox, Lineax (`pip install -e ".[jax]"`).
-
----
-
-## Docs
-
-- [`docs/simulator.md`](docs/simulator.md) — AnalogLinear, activations, ODE solver, sweep API, design decisions
-- [`docs/experiments.md`](docs/experiments.md) — the 7 models, full results, complete vs. in-progress
-- [`docs/ark_export.md`](docs/ark_export.md) — Ark export pipeline, two paths, per-architecture status
-
-<!-- Full methodology and errata: [`experiments/cross_arch_tolerance/TECHNICAL_NOTE.md`](experiments/cross_arch_tolerance/TECHNICAL_NOTE.md) -->

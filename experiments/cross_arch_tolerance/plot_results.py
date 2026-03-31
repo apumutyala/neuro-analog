@@ -96,65 +96,72 @@ def _save_fig(fig, name: str) -> None:
 # ── Figure 1: Cross-Architecture Mismatch Tolerance ──────────────────────
 
 def plot_figure1():
-    """THE central figure: 7 quality-vs-sigma curves."""
-    fig, ax = plt.subplots(figsize=(8, 5.5))
-    ax.set_xlabel("Conductance Mismatch  σ")
-    ax.set_ylabel("Normalized Quality  (digital = 1.0)")
-    ax.set_title("Cross-Architecture Analog Tolerance\nQuality under fabrication mismatch (50 Monte Carlo trials per point)", pad=12)
-    ax.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
-    ax.text(0.155, 0.905, "90% threshold", color="#95a5a6", fontsize=9, va="bottom", ha="right")
-    ax.set_xlim(0, 0.155)
-    ax.set_ylim(0.3, 1.08)
-
-    handles = []
-    threshold_annotations = []
-
-    # Diffusion and Flow use ablation_mismatch: their mismatch.json baselines are
-    # unreliable (Diffusion: conservative ADC floor contaminates σ=0 baseline;
-    # Flow: z0 sampling seed inflates σ=0 to 1.38). ablation_mismatch uses an
-    # internally consistent baseline and correctly reflects mismatch sensitivity.
+    """Two-panel figure: full scale (left) + frontier zoom (right)."""
     _mismatch_source = {name: "mismatch" for name in _ORDER}
     _mismatch_source["diffusion"] = "ablation_mismatch"
     _mismatch_source["flow"] = "ablation_mismatch"
-
+    arch_data = {}
     for name in _ORDER:
         d = _load(name, _mismatch_source[name])
-        if d is None:
-            continue
+        if d is not None:
+            arch_data[name] = d
 
+    fig, (ax_full, ax_zoom) = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig.suptitle(
+        "Cross-Architecture Analog Tolerance\n"
+        "Task performance under fabrication mismatch (50 Monte Carlo trials per point)",
+        fontsize=12, y=1.02,
+    )
+    panels = [
+        (ax_full, (0.30, 1.08), "Full range"),
+        (ax_zoom, (0.87, 1.06), "Frontier zoom  (0.87\u20131.06)"),
+    ]
+    handles = []
+    threshold_annotations = []
+
+    for name in _ORDER:
+        if name not in arch_data:
+            continue
+        d = arch_data[name]
         sigma = np.array(d["sigma_values"])
-        mean = np.array(d["normalized_mean"])
-        std = np.array(d["normalized_std"])
+        mean  = np.array(d["normalized_mean"])
+        std   = np.array(d["normalized_std"])
         color = _COLORS[name]
-        label = _LABELS[name]
         threshold = d.get("degradation_threshold_10pct", None)
 
-        ax.plot(sigma, mean, color=color, linewidth=2.2, label=label, zorder=3)
-        ax.fill_between(sigma, mean - std, mean + std, color=color, alpha=0.12, zorder=2)
+        for ax_i, _, _ in panels:
+            ax_i.plot(sigma, mean, color=color, linewidth=2.2, zorder=3)
+            ax_i.fill_between(sigma, mean - std, mean + std, color=color, alpha=0.12, zorder=2)
 
-        # Mark threshold crossing: annotate the FIRST FAILURE sigma (quality < 0.9),
-        # which is one step beyond the stored "last safe" degradation_threshold_10pct.
         if threshold and threshold > 0:
             last_safe_idx = np.searchsorted(sigma, threshold)
             first_fail_idx = last_safe_idx + 1
             if first_fail_idx < len(sigma):
                 first_fail_sigma = sigma[first_fail_idx]
-            else:
-                first_fail_sigma = threshold  # already at last point
-            ax.axvline(first_fail_sigma, color=color, linewidth=0.6, linestyle=":", alpha=0.5)
-            threshold_annotations.append((first_fail_sigma, 0.305, color, f"{first_fail_sigma:.2f}"))
+                ax_full.axvline(first_fail_sigma, color=color, linewidth=0.6, linestyle=":", alpha=0.5)
+                threshold_annotations.append((first_fail_sigma, 0.305, color, f"{first_fail_sigma:.2f}"))
 
-        handles.append(Line2D([0], [0], color=color, linewidth=2.2, label=f"{label}"))
+        handles.append(Line2D([0], [0], color=color, linewidth=2.2, label=_LABELS[name]))
 
-    # Threshold markers on x-axis
     for x, y, c, txt in sorted(threshold_annotations):
-        ax.text(x, y, txt, color=c, fontsize=7.5, ha="center", rotation=90)
+        ax_full.text(x, y, txt, color=c, fontsize=7.5, ha="center", rotation=90)
 
-    ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.9,
-              title="Architecture", title_fontsize=9)
-    ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
-    ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
+    tick_vals   = [0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
+    tick_labels = ["0%", "3%", "5%", "7%", "10%", "12%", "15%"]
+    for ax_i, (ylo, yhi), title in panels:
+        ax_i.set_title(title, fontsize=10, pad=6)
+        ax_i.set_xlabel("Conductance Mismatch  \u03c3")
+        ax_i.set_xlim(0, 0.155)
+        ax_i.set_ylim(ylo, yhi)
+        ax_i.set_xticks(tick_vals)
+        ax_i.set_xticklabels(tick_labels)
+        ax_i.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
 
+    ax_full.set_ylabel("Normalized Task Performance  (digital = 1.0)")
+    ax_full.text(0.155, 0.905, "90% threshold", color="#95a5a6", fontsize=9, va="bottom", ha="right")
+    ax_zoom.text(0.155, 0.902, "90% threshold", color="#95a5a6", fontsize=8, va="bottom", ha="right")
+    ax_full.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.9,
+                   title="Architecture", title_fontsize=9)
     fig.tight_layout()
     _save_fig(fig, "fig1_mismatch_tolerance")
     plt.close(fig)
@@ -165,10 +172,11 @@ def plot_figure1():
 def plot_figure2():
     """7-panel ablation: mismatch-only, thermal-only, quantization-only per architecture."""
     n_arch = len(_ORDER)
-    fig, axes = plt.subplots(1, n_arch, figsize=(16, 4), sharey=True)
-    fig.suptitle("Noise Source Ablation at σ = 0.05\n(which nonideality dominates per architecture?)", y=1.02)
+    _YLIM = (0, 1.15)
+    fig, axes = plt.subplots(1, n_arch, figsize=(16, 4), sharey=False)
+    fig.suptitle("Noise Source Ablation at \u03c3 = 0.15\n(which nonideality dominates per architecture at high noise?)", y=1.02)
 
-    sigma_idx = 4  # sigma=0.05 is index 4 in default sigma_values
+    sigma_idx = 6  # sigma=0.15 is index 6 in [0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.12, 0.15]
 
     for ax, name in zip(axes, _ORDER):
         ax.set_title(_LABELS[name], fontsize=9)
@@ -188,11 +196,21 @@ def plot_figure2():
                 baseline = 1.0
             mean_at_sigma = np.array(d["mean"])[sigma_idx]
             norm_q = 1.0 + (mean_at_sigma - baseline) / abs(baseline) if baseline != 0 else 0.5
-            ax.bar(i, norm_q, color=colors_bar[i], alpha=0.8, width=0.6)
-            ax.text(i, norm_q + 0.01, f"{norm_q:.2f}", ha="center", fontsize=7.5)
+            bar_h = min(norm_q, _YLIM[1] - 0.01)  # clip bar to axis; annotate if off-chart
+            ax.bar(i, bar_h, color=colors_bar[i], alpha=0.8, width=0.6)
+            if norm_q > _YLIM[1]:
+                # Off-chart: draw an upward arrow and label the real value
+                ax.annotate(f"{norm_q:.2f}", xy=(i, _YLIM[1] - 0.01),
+                            xytext=(i, _YLIM[1] - 0.06),
+                            ha="center", fontsize=7.5, color=colors_bar[i],
+                            arrowprops=dict(arrowstyle="->", color=colors_bar[i], lw=0.8))
+            elif norm_q < 0:
+                ax.text(i, 0.02, f"{norm_q:.2f}", ha="center", fontsize=7.5, color=colors_bar[i])
+            else:
+                ax.text(i, bar_h + 0.01, f"{norm_q:.2f}", ha="center", fontsize=7.5)
 
         ax.axhline(1.0, color="#bdc3c7", linewidth=0.8, linestyle="--")
-        ax.set_ylim(0, 1.15)
+        ax.set_ylim(*_YLIM)
 
     from matplotlib.patches import Patch
     legend_elems = [
@@ -219,16 +237,25 @@ def plot_figure3():
     ax.text(16.2, 0.905, "90%", color="#95a5a6", fontsize=8)
     ax.set_ylim(0.3, 1.08)
 
+    _YFLOOR = 0.3
     for name in _ORDER:
         d = _load(name, "adc")
         if d is None:
             continue
-        bits = d["sigma_values"]   # reused field holds bit values
+        bits = np.array(d["sigma_values"])
         mean = np.array(d["normalized_mean"])
-        std = np.array(d["normalized_std"])
+        std  = np.array(d["normalized_std"])
         color = _COLORS[name]
-        ax.plot(bits, mean, color=color, linewidth=2.0, marker="o", markersize=4, label=_LABELS[name])
-        ax.fill_between(bits, mean - std, mean + std, color=color, alpha=0.10)
+        mean_clipped = np.clip(mean, _YFLOOR, 1.08)
+        ax.plot(bits, mean_clipped, color=color, linewidth=2.0, marker="o", markersize=4, label=_LABELS[name])
+        ax.fill_between(bits, np.clip(mean - std, _YFLOOR, 1.08),
+                        np.clip(mean + std, _YFLOOR, 1.08), color=color, alpha=0.10)
+        # Annotate any values that fell below the floor
+        for bw, mv, mc in zip(bits, mean, mean_clipped):
+            if mv < _YFLOOR:
+                ax.annotate(f"{mv:.2f}", xy=(bw, _YFLOOR), xytext=(bw, _YFLOOR + 0.07),
+                            ha="center", fontsize=7.5, color=color,
+                            arrowprops=dict(arrowstyle="->", color=color, lw=0.8))
 
     ax.set_xticks([2, 4, 6, 8, 10, 12, 16])
     ax.legend(fontsize=9, loc="lower right", framealpha=0.9)
@@ -240,55 +267,84 @@ def plot_figure3():
 # ── Figure 4: DEQ Convergence Under Mismatch ─────────────────────────────
 
 def plot_figure4():
-    """DEQ: accuracy AND convergence failure rate on dual y-axes."""
-    d_acc = _load("deq", "mismatch")
-    conv_path = _RESULTS_DIR / "deq_convergence.json"
+    """DEQ: discrete fixed-point iteration vs. Hopfield ODE relaxation on analog substrate.
 
-    if d_acc is None:
+    Left panel: mismatch sweep, solid=discrete iteration, dashed=Hopfield ODE.
+    Right panel: ADC precision sweep (extended y-axis to show off-chart divergence).
+    """
+    import matplotlib.ticker
+    _COLOR = "#e67e22"
+
+    d_disc_m = _load("deq", "mismatch")
+    d_hop_m  = _load("deq", "mismatch",  substrate="hopfield")
+    d_disc_a = _load("deq", "adc")
+    d_hop_a  = _load("deq", "adc",       substrate="hopfield")
+
+    if d_disc_m is None:
         print("  [Fig 4] No DEQ mismatch data. Skipping.")
         return
 
-    sigma = np.array(d_acc["sigma_values"])
-    acc = np.array(d_acc["normalized_mean"])
-    acc_std = np.array(d_acc["normalized_std"])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(
+        "DEQ: Discrete Iteration vs. Hopfield ODE Relaxation on Analog Substrate",
+        fontsize=12, y=1.01,
+    )
 
-    fig, ax1 = plt.subplots(figsize=(7, 4.5))
-    ax2 = ax1.twinx()
-
-    ax1.set_xlabel("Conductance Mismatch  σ")
-    ax1.set_ylabel("Classification Accuracy (normalized)", color="#e67e22")
-    ax2.set_ylabel("Convergence Failure Rate", color="#c0392b")
-    ax1.set_title("DEQ Convergence Bifurcation Under Mismatch\nFailure rate = 100% at all σ — metric artifact, not true divergence (see §3.4)", pad=10)
-
-    l1 = ax1.plot(sigma, acc, color="#e67e22", linewidth=2.2, label="Accuracy", zorder=3)
-    ax1.fill_between(sigma, acc - acc_std, acc + acc_std, color="#e67e22", alpha=0.15)
-    ax1.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--")
-    ax1.tick_params(axis="y", labelcolor="#e67e22")
-    ax1.set_ylim(0, 1.1)
-
-    if conv_path.exists():
-        with open(conv_path) as f:
-            conv_data = json.load(f)
-        fail_rates = np.array(conv_data["convergence_failure_rate"])
-        l2 = ax2.plot(sigma, fail_rates, color="#c0392b", linewidth=2.0,
-                      linestyle="--", marker="s", markersize=4, label="Failure Rate")
-        ax2.tick_params(axis="y", labelcolor="#c0392b")
-        ax2.set_ylim(0, 1.0)
-        ax2.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=1.0))
-
-        # Annotate bifurcation point (where failure rate first exceeds 5%)
-        for i, r in enumerate(fail_rates):
-            if r > 0.05:
-                ax1.axvline(sigma[i], color="#c0392b", linewidth=1.0, linestyle=":", alpha=0.6)
-                ax1.text(sigma[i] + 0.003, 0.05, f"ρ > 1\n(σ={sigma[i]:.2f})",
-                         color="#c0392b", fontsize=8)
-                break
-
+    # ── Left: mismatch sweep ───────────────────────────────────────────────────
+    ax1.set_title("Mismatch Tolerance", fontsize=10)
+    ax1.set_xlabel("Conductance Mismatch  \u03c3")
+    ax1.set_ylabel("Normalized Task Performance  (digital = 1.0)")
+    ax1.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
+    ax1.set_xlim(0, 0.155)
+    ax1.set_ylim(0.3, 1.15)
     ax1.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
     ax1.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
-    lines = [l for l in ax1.get_lines() + ax2.get_lines() if not l.get_label().startswith("_")]
-    labels = [l.get_label() for l in lines]
-    ax1.legend(lines, labels, loc="upper right", fontsize=9)
+
+    if d_disc_m is not None:
+        sigma = np.array(d_disc_m["sigma_values"])
+        m     = np.array(d_disc_m["normalized_mean"])
+        s     = np.array(d_disc_m["normalized_std"])
+        ax1.plot(sigma, m, color=_COLOR, linewidth=2.2, linestyle="-",  label="Discrete iteration")
+        ax1.fill_between(sigma, m - s, m + s, color=_COLOR, alpha=0.12)
+
+    if d_hop_m is not None:
+        sigma = np.array(d_hop_m["sigma_values"])
+        m     = np.array(d_hop_m["normalized_mean"])
+        s     = np.array(d_hop_m["normalized_std"])
+        ax1.plot(sigma, m, color=_COLOR, linewidth=2.2, linestyle="--", label="Hopfield ODE relaxation")
+        ax1.fill_between(sigma, m - s, m + s, color=_COLOR, alpha=0.07)
+
+    ax1.legend(fontsize=9, loc="lower left")
+    ax1.text(0.02, 0.04,
+             "Hopfield: RC circuit settles to fixed point\ncontinuously \u2014 no discrete iteration needed",
+             transform=ax1.transAxes, fontsize=8, color="#555",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#fef9f0", edgecolor="#e67e22", alpha=0.85))
+
+    # ── Right: ADC precision sweep ─────────────────────────────────────────────
+    ax2.set_title("ADC Precision  (\u03c3 = 0.05)", fontsize=10)
+    ax2.set_xlabel("ADC Bit Width")
+    ax2.set_ylabel("Normalized Task Performance  (digital = 1.0)")
+    ax2.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
+    ax2.axhline(0.0,  color="#ecf0f1", linewidth=0.6, linestyle=":",  zorder=0)
+    ax2.set_xlim(1.5, 16.5)
+    ax2.set_ylim(-1.05, 1.15)
+    ax2.set_xticks([2, 4, 6, 8, 10, 12, 16])
+
+    for d, label, ls in [(d_disc_a, "Discrete", "-"), (d_hop_a, "Hopfield", "--")]:
+        if d is None:
+            continue
+        bits = np.array(d["sigma_values"])
+        m    = np.array(d["normalized_mean"])
+        m_clipped = np.clip(m, -1.0, 1.15)
+        ax2.plot(bits, m_clipped, color=_COLOR, linewidth=2.2, linestyle=ls,
+                 marker="o", markersize=4, label=label)
+        for bw, mv, mc in zip(bits, m, m_clipped):
+            if mv < -1.0:
+                ax2.annotate(f"{mv:.2f}", xy=(bw, -1.0), xytext=(bw, -0.85),
+                             ha="center", fontsize=7.5, color=_COLOR,
+                             arrowprops=dict(arrowstyle="->", color=_COLOR, lw=0.8))
+
+    ax2.legend(fontsize=9, loc="lower right")
 
     fig.tight_layout()
     _save_fig(fig, "fig4_deq_convergence")
@@ -342,6 +398,7 @@ def plot_figure5():
             continue
 
         base_model = module.load_model(str(ckpt))
+        _dev = next(base_model.parameters()).device
 
         for col, sigma in enumerate(sigmas):
             ax = fig.add_subplot(gs[row, col + 1])
@@ -360,13 +417,18 @@ def plot_figure5():
                 if arch_name in ("neural_ode", "flow"):
                     # 2D scatter of generated samples
                     from neuro_analog.simulator import analog_odeint
-                    z0 = torch.randn(200, 2)
-                    t_span = torch.tensor([0.0, 1.0])
+                    torch.manual_seed(0)
+                    z0 = torch.randn(200, 2, device=_dev)
+                    t_span = torch.tensor([0.0, 1.0], device=_dev)
+                    _dt = 0.025 if arch_name == "neural_ode" else 0.01
                     model.eval()
-                    x_gen = analog_odeint(model, z0, t_span, dt=0.25).detach().cpu().numpy()
+                    x_gen = analog_odeint(model, z0, t_span, dt=_dt).detach().cpu().numpy()
+                    _margin = 0.3
+                    _xr = [x_gen[:, 0].min() - _margin, x_gen[:, 0].max() + _margin]
+                    _yr = [x_gen[:, 1].min() - _margin, x_gen[:, 1].max() + _margin]
                     ax.scatter(x_gen[:, 0], x_gen[:, 1], s=3, alpha=0.6,
                                c=_COLORS[arch_name], rasterized=True)
-                    ax.set_xlim(-3, 3); ax.set_ylim(-3, 3)
+                    ax.set_xlim(_xr); ax.set_ylim(_yr)
                     ax.axis("on")
                     ax.set_xticks([]); ax.set_yticks([])
                     for sp in ax.spines.values():
@@ -377,9 +439,9 @@ def plot_figure5():
                     import torch
                     from models.diffusion import _get_betas, _get_alphas, _IMG_DIM
                     import math as _math
-                    betas = _get_betas()
+                    betas = _get_betas().to(_dev)
                     _, alphas_bar = _get_alphas(betas)
-                    x = torch.randn(1, _IMG_DIM)
+                    x = torch.randn(1, _IMG_DIM, device=_dev)
                     n_ddim = 10
                     T = 100
                     ddim_steps = torch.linspace(T-1, 0, n_ddim+1).long()
@@ -388,7 +450,7 @@ def plot_figure5():
                         for di in range(n_ddim):
                             t_c = ddim_steps[di].item()
                             t_n = ddim_steps[di+1].item()
-                            t_t = torch.full((1,), t_c, dtype=torch.long)
+                            t_t = torch.full((1,), t_c, dtype=torch.long, device=_dev)
                             eps = model(x, t_t)
                             a_c = alphas_bar[t_c]
                             x0p = (x - _math.sqrt(1 - a_c) * eps) / _math.sqrt(a_c)
@@ -405,7 +467,7 @@ def plot_figure5():
                 elif arch_name == "ebm":
                     from models.ebm import _get_data
                     _, X_test = _get_data()
-                    v = X_test[:1].clone()
+                    v = X_test[:1].clone().to(_dev)
                     model.eval()
                     with torch.no_grad():
                         for _ in range(20):
@@ -509,7 +571,10 @@ def plot_figure7():
             ax.set_xticks([2, 4, 6, 8, 10, 12, 16])
         ax.set_ylabel("Normalized Quality  (digital = 1.0)")
         ax.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
-        ax.set_ylim(0.3, 1.15)
+        if sweep_suffix == "adc":
+            ax.set_ylim(-1.05, 1.15)
+        else:
+            ax.set_ylim(0.3, 1.25)  # raised ceiling: Neural ODE full-analog can exceed 1.1
 
         for name in _ORDER:
             d_cons = _load(name, sweep_suffix, domain="conservative")

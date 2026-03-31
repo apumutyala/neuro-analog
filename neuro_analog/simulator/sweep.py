@@ -270,7 +270,8 @@ def ablation_sweep(
         print(f"\n  Ablation: {name}-only sweep...")
         per_trial = np.zeros((len(sigma_values), n_trials), dtype=np.float64)
 
-        analog_model = analogize(model, sigma_mismatch=0.0, **analog_kwargs)
+        kwargs = {k: v for k, v in analog_kwargs.items() if k != "sigma_mismatch"}
+        analog_model = analogize(model, sigma_mismatch=0.0, **kwargs)
         configure_analog_profile(analog_model, analog_domain)
         if calibration_data is not None:
             calibrate_analog_model(analog_model, calibration_data)
