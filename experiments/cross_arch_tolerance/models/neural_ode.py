@@ -1,6 +1,6 @@
 """Neural ODE experiment model — Continuous Normalizing Flow on make_circles.
 
-Architecture: f_theta: [2+1 → 64 → 64 → 2] MLP with tanh (time-augmented).
+Architecture: f_theta: [2+1 → 20 → 20 → 2] MLP with tanh (time-augmented).
 Task: Density estimation on 2D make_circles via CNF change-of-variables.
 Metric: Negative log-likelihood = log p(x_test) [higher = better].
 
@@ -93,7 +93,7 @@ class _TimeAugMLP(nn.Module):
 # ── Standard interface ─────────────────────────────────────────────────────
 
 def create_model() -> nn.Module:
-    return _TimeAugMLP(dim=2, hidden=64)  # 2882 params — sufficient for 2D CNF on circles
+    return _TimeAugMLP(dim=2, hidden=20)
 
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:

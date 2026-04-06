@@ -197,7 +197,6 @@ def main(n: int = 2, sigma: float = 0.05) -> None:
 
     sep(f"05_cdg_bridge.py -- Hopfield ODE CDG  (n={n}, sigma={sigma})")
     print("  Architecture:  dx/dt = -x + J*tanh(x) + b")
-    print("  This is Ark's CNN/CANN paradigm; maps 1-to-1 to CDGSpec.")
 
     J, b = make_demo_weights(n)
 

@@ -1,8 +1,8 @@
 """EBM experiment model — Restricted Boltzmann Machine on binarized 8x8 MNIST.
 
-Architecture: RBM with visible=64 (8x8), hidden=32.
-Training: Contrastive Divergence CD-1.
-Evaluation: 100 steps of Gibbs sampling from test data, measure reconstruction error.
+Architecture: RBM with visible=64 (8x8), hidden=128.
+Training: Contrastive Divergence CD-5.
+Evaluation: Free-generation quality — Gibbs chain from random init, nearest-neighbor distance to test set.
   Metric: Negative reconstruction MSE [higher = better].
 
 EBM analog mapping:
