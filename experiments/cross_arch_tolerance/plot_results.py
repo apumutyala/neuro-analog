@@ -71,6 +71,7 @@ plt.rcParams.update(_STYLE)
 
 _DOMAIN = "conservative"      # Set by main() via --domain flag
 _SUBSTRATE = "classic"        # Set by main() via --substrate flag
+_SIGMA_CAP = 0.15             # Cap sigma range for cross-arch comparison figures
 
 
 def _load(name: str, suffix: str, domain: str | None = None, substrate: str | None = None) -> dict | None:
@@ -109,7 +110,7 @@ def plot_figure1():
     fig, (ax_full, ax_zoom) = plt.subplots(1, 2, figsize=(14, 5.5))
     fig.suptitle(
         "Cross-Architecture Analog Tolerance\n"
-        "Task performance under fabrication mismatch (50 Monte Carlo trials per point)",
+        "Task performance under fabrication mismatch (50–200 Monte Carlo trials per point)",
         fontsize=12, y=1.02,
     )
     panels = [
@@ -126,6 +127,9 @@ def plot_figure1():
         sigma = np.array(d["sigma_values"])
         mean  = np.array(d["normalized_mean"])
         std   = np.array(d["normalized_std"])
+        # Clip to _SIGMA_CAP so all architectures share the same x-range
+        _cap_mask = sigma <= _SIGMA_CAP + 1e-9
+        sigma, mean, std = sigma[_cap_mask], mean[_cap_mask], std[_cap_mask]
         color = _COLORS[name]
         threshold = d.get("degradation_threshold_10pct", None)
 
@@ -146,20 +150,30 @@ def plot_figure1():
     for x, y, c, txt in sorted(threshold_annotations):
         ax_full.text(x, y, txt, color=c, fontsize=7.5, ha="center", rotation=90)
 
-    tick_vals   = [0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
-    tick_labels = ["0%", "3%", "5%", "7%", "10%", "12%", "15%"]
+    # Build tick grid from actual sigma values across loaded datasets (capped at _SIGMA_CAP)
+    _all_sigmas = sorted({
+        s for d in arch_data.values() for s in d.get("sigma_values", [])
+        if s <= _SIGMA_CAP + 1e-9
+    })
+    tick_vals   = [s for s in _all_sigmas if s in {0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30}]
+    if not tick_vals:
+        tick_vals = _all_sigmas
+    tick_labels = [f"{s:.0%}" for s in tick_vals]
+    _sigma_max = max(_all_sigmas) if _all_sigmas else 0.15
+    _xlim_right = _sigma_max * 1.04  # small margin so last tick isn't flush with edge
+
     for ax_i, (ylo, yhi), title in panels:
         ax_i.set_title(title, fontsize=10, pad=6)
         ax_i.set_xlabel("Conductance Mismatch  \u03c3")
-        ax_i.set_xlim(0, 0.155)
+        ax_i.set_xlim(0, _xlim_right)
         ax_i.set_ylim(ylo, yhi)
         ax_i.set_xticks(tick_vals)
         ax_i.set_xticklabels(tick_labels)
         ax_i.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
 
     ax_full.set_ylabel("Normalized Task Performance  (digital = 1.0)")
-    ax_full.text(0.155, 0.905, "90% threshold", color="#95a5a6", fontsize=9, va="bottom", ha="right")
-    ax_zoom.text(0.155, 0.902, "90% threshold", color="#95a5a6", fontsize=8, va="bottom", ha="right")
+    ax_full.text(_xlim_right, 0.905, "90% threshold", color="#95a5a6", fontsize=9, va="bottom", ha="right")
+    ax_zoom.text(_xlim_right, 0.902, "90% threshold", color="#95a5a6", fontsize=8, va="bottom", ha="right")
     ax_full.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.9,
                    title="Architecture", title_fontsize=9)
     fig.tight_layout()
@@ -174,9 +188,15 @@ def plot_figure2():
     n_arch = len(_ORDER)
     _YLIM = (0, 1.15)
     fig, axes = plt.subplots(1, n_arch, figsize=(16, 4), sharey=False)
-    fig.suptitle("Noise Source Ablation at \u03c3 = 0.15\n(which nonideality dominates per architecture at high noise?)", y=1.02)
-
-    sigma_idx = 6  # sigma=0.15 is index 6 in [0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.12, 0.15]
+    # Determine the max sigma from any available ablation dataset (for title)
+    _ablation_sigma_label = "max σ"
+    for _n in _ORDER:
+        _d = _load(_n, "ablation_mismatch")
+        if _d is not None:
+            _sv = np.array(_d["sigma_values"])
+            _ablation_sigma_label = f"σ = {_sv[-1]:.0%}"
+            break
+    fig.suptitle(f"Noise Source Ablation at {_ablation_sigma_label}\n(which nonideality dominates per architecture at high noise?)", y=1.02)
 
     for ax, name in zip(axes, _ORDER):
         ax.set_title(_LABELS[name], fontsize=9)
@@ -194,6 +214,12 @@ def plot_figure2():
             baseline = d.get("digital_baseline", 1.0)
             if baseline == 0:
                 baseline = 1.0
+            # Find the index of the highest sigma in this dataset for the ablation bar.
+            sigma_arr = np.array(d["sigma_values"])
+            # Use last sigma <= _SIGMA_CAP so all bars compare at the same level
+            _valid = np.where(sigma_arr <= _SIGMA_CAP + 1e-9)[0]
+            sigma_idx = int(_valid[-1]) if len(_valid) else len(sigma_arr) - 1
+            sigma_label_val = sigma_arr[sigma_idx]
             mean_at_sigma = np.array(d["mean"])[sigma_idx]
             norm_q = 1.0 + (mean_at_sigma - baseline) / abs(baseline) if baseline != 0 else 0.5
             bar_h = min(norm_q, _YLIM[1] - 0.01)  # clip bar to axis; annotate if off-chart
@@ -295,10 +321,15 @@ def plot_figure4():
     ax1.set_xlabel("Conductance Mismatch  \u03c3")
     ax1.set_ylabel("Normalized Task Performance  (digital = 1.0)")
     ax1.axhline(0.90, color="#bdc3c7", linewidth=1.0, linestyle="--", zorder=0)
-    ax1.set_xlim(0, 0.155)
+    _deq_sigmas = sorted({s for d in [d_disc_m, d_hop_m] if d for s in d.get("sigma_values", [])})
+    _deq_xlim = max(_deq_sigmas) * 1.04 if _deq_sigmas else 0.155
+    _deq_ticks = [s for s in _deq_sigmas if s in {0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30}]
+    if not _deq_ticks:
+        _deq_ticks = _deq_sigmas
+    ax1.set_xlim(0, _deq_xlim)
     ax1.set_ylim(0.3, 1.15)
-    ax1.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
-    ax1.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
+    ax1.set_xticks(_deq_ticks)
+    ax1.set_xticklabels([f"{s:.0%}" for s in _deq_ticks])
 
     if d_disc_m is not None:
         sigma = np.array(d_disc_m["sigma_values"])
@@ -494,8 +525,7 @@ def plot_figure6():
     fig, ax = plt.subplots(figsize=(8, 5.5))
     ax.set_xlabel("Conductance Mismatch  σ")
     ax.set_ylabel("Output MSE  (lower = less corruption)")
-    ax.set_title("Output Corruption Under Analog Mismatch\nMSE between digital and analog outputs (50 Monte Carlo trials)", pad=12)
-    ax.set_xlim(0, 0.155)
+    ax.set_title("Output Corruption Under Analog Mismatch\nMSE between digital and analog outputs (50–200 Monte Carlo trials)", pad=12)
     ax.set_yscale("log")  # Log scale since MSE values span orders of magnitude
 
     handles = []
@@ -510,6 +540,8 @@ def plot_figure6():
         sigma = np.array(d["sigma_values"])
         mean = -np.array(d["mean"])  # Negate back to positive MSE
         std = np.array(d["std"])
+        _cap_mask = sigma <= _SIGMA_CAP + 1e-9
+        sigma, mean, std = sigma[_cap_mask], mean[_cap_mask], std[_cap_mask]
         color = _COLORS[name]
         label = _LABELS[name]
 
@@ -520,8 +552,20 @@ def plot_figure6():
 
     ax.legend(handles=handles, loc="upper left", fontsize=9, framealpha=0.9,
               title="Architecture", title_fontsize=9)
-    ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
-    ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
+    # Dynamic x-axis based on loaded MSE sigma values
+    _mse_sigmas = sorted({s for name in _ORDER for d in [_load(name, "output_mse")] if d for s in d.get("sigma_values", []) if s <= _SIGMA_CAP + 1e-9})
+    if _mse_sigmas:
+        _mse_xlim = max(_mse_sigmas) * 1.04
+        _mse_ticks = [s for s in _mse_sigmas if s in {0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30}]
+        if not _mse_ticks:
+            _mse_ticks = _mse_sigmas
+        ax.set_xlim(0, _mse_xlim)
+        ax.set_xticks(_mse_ticks)
+        ax.set_xticklabels([f"{s:.0%}" for s in _mse_ticks])
+    else:
+        ax.set_xlim(0, 0.155)
+        ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
+        ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
     ax.grid(True, which="both", alpha=0.2, linestyle="--")
     ax.text(0.99, 0.02,
             "Diffusion not shown: MSE ≈ 0.69 (off-chart)\n"
@@ -564,6 +608,7 @@ def plot_figure7():
         )
         if sweep_suffix == "mismatch":
             ax.set_xlabel("Conductance Mismatch  σ")
+            ax.set_xlim(0, _SIGMA_CAP * 1.04)
             ax.set_xticks([0.0, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15])
             ax.set_xticklabels(["0%", "3%", "5%", "7%", "10%", "12%", "15%"])
         else:
@@ -588,12 +633,18 @@ def plot_figure7():
             if d_cons is not None:
                 x = np.array(d_cons[x_axis])
                 m = np.array(d_cons["normalized_mean"])
+                if sweep_suffix == "mismatch":
+                    _mask = x <= _SIGMA_CAP + 1e-9
+                    x, m = x[_mask], m[_mask]
                 ax.plot(x, m, color=color, linewidth=2.0, linestyle="-",
                         label=f"{label} (conservative)")
 
             if d_full is not None:
                 x = np.array(d_full[x_axis])
                 m = np.array(d_full["normalized_mean"])
+                if sweep_suffix == "mismatch":
+                    _mask = x <= _SIGMA_CAP + 1e-9
+                    x, m = x[_mask], m[_mask]
                 ax.plot(x, m, color=color, linewidth=2.0, linestyle="--",
                         label=f"{label} (full-analog)")
 

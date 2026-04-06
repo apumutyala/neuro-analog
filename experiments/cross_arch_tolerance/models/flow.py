@@ -1,6 +1,6 @@
 """Flow model experiment — Rectified Flow on make_moons.
 
-Architecture: v_theta: [2+1 → 64 → 64 → 2] MLP with tanh (same as Neural ODE).
+Architecture: v_theta: [2+1 → 20 → 20 → 2] MLP with tanh (same as Neural ODE).
 Task: 2D generation of make_moons distribution.
 Training: Flow matching loss — minimize ||v_theta(x_t, t) - (x1 - x0)||^2
   where x_t = (1-t)*x0 + t*x1, x0 ~ N(0,I), x1 ~ data.
@@ -85,7 +85,7 @@ class _FlowMLP(nn.Module):
 # ── Standard interface ─────────────────────────────────────────────────────
 
 def create_model() -> nn.Module:
-    return _FlowMLP(dim=2, hidden=64)
+    return _FlowMLP(dim=2, hidden=20)
 
 
 def train_model(model: nn.Module, save_path: str) -> nn.Module:

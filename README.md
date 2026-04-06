@@ -44,31 +44,45 @@ See [`examples/01_quickstart.py`](examples/01_quickstart.py) for a full walkthro
 
 ## Experiment: Analog Tolerance across Neural Architecture Families
 
-Seven neural network families trained on small-scale tasks, then swept over conductance mismatch σ ∈ {0–15%} with 50 Monte Carlo trials per point. Three noise sources ablated independently. ADC bit-width swept separately. Two simulation profiles: conservative (ADC at every layer boundary) and full-analog (ADC at final readout only).
+Seven neural network families trained on small-scale tasks, swept over conductance mismatch σ with 50–200 Monte Carlo trials per point (DEQ: 200 trials on a dense σ grid; others: 50 trials). Three noise sources ablated independently. ADC bit-width swept separately. Two simulation profiles: conservative (ADC at every layer boundary) and full-analog (ADC at final readout only).
 
 The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are before committing to a chip design or running analog-aware adjoint optimization within Ark.
 
 **Disclaimer:** These are simulation results on demo-scale models (1K–103K parameters) trained near capacity on synthetic and small benchmark tasks. They represent a worst-case bound for each architecture family — production-scale overparameterized models will degrade more gracefully. This is not hardware validation. Several physical effects are not simulated (see Nonidealities section). Results should be interpreted as characterizing the analog sensitivity of the architecture's computational structure, not a specific chip.
 
-### Results (50 trials, conservative profile)
+> **Work in progress — results will be updated.** The models in this experiment are demo-scale and several are still being fine-tuned for accuracy. The tolerance metric measures *relative* degradation (analog vs. digital baseline for the same model), so architectural rankings are meaningful even when the underlying models are not fully optimized. However, three specific results have known data quality issues and should be treated as preliminary until the planned re-run is complete:
+>
+> - **Diffusion (DDIM):** The 3-layer MLP score network does not generate visually recognizable 8×8 MNIST digits even at σ=0. The structural quantization-accumulation finding (quality floor across all DDIM steps) is architecturally real, but the absolute quality numbers are inflated by the model's limited capacity. Fig 5 reflects this — the σ=0 baseline for Diffusion is already poor. Planned fix: larger score network or U-Net backbone.
+>
+> - **EBM:** The current checkpoint's sweep baseline and the local `evaluate()` differ by ~6%, attributable to Gibbs chain stochasticity during evaluation. The binarized 8×8 test sample used in Fig 5 also happens to be nearly empty (3 non-zero pixels after downsampling and binarization), making the reconstruction in Fig 5 unrepresentative. Planned fix: fix the Fig 5 test sample seed and tighten evaluation by averaging over multiple Gibbs chains.
+>
+> - **DEQ:** The sweep baseline stored in the result files (−0.5673) does not match the current checkpoint's `evaluate()` output (−0.4447) — a 21% discrepancy on a fully deterministic metric — indicating the checkpoint on disk was updated after the RunPod sweep was run. The σ≈11% threshold finding is internally consistent within the sweep data but was computed against a different model version than what is currently saved. Planned fix: re-run the full DEQ sweep from the current checkpoint.
+>
+> Neural ODE, SSM, Transformer, and Flow baselines are stable and consistent (stored sweep baselines match current `evaluate()` output within 1%).
 
-| Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits |
-|---|---|---|---|
-| Neural ODE | ≥ 15% | negligible | 2 |
-| EBM | ≥ 15% | negligible | 4 |
-| SSM | ≥ 15% | negligible | 4 |
-| Diffusion | ≥ 15% | negligible | 4 |
-| Transformer | ≥ 15% | negligible | 4 |
-| DEQ | 10% | mismatch | **6** |
-| Flow | 7% | mismatch | 2 |
+### Results (conservative profile)
 
-**Key finding (conservative):** Five architectures show no measurable degradation up to σ=15%. Flow and DEQ are the only architectures with identifiable mismatch thresholds within the tested range: Flow breaks down at σ=7% and DEQ at σ=10%, both mismatch-dominated. All other noise sources (thermal, quantization) are negligible at demo-scale layer widths.
+| Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits | Quality at max σ tested |
+|---|---|---|---|---|
+| Neural ODE | ≥ 15% | negligible | 2 | ≥ 0.90 at σ=15% |
+| S4D (diagonal SSM) | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
+| EBM | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
+| Flow | ~15–20% ² | mismatch | 4 | 0.905 ± 0.096 at σ=15% |
+| Transformer | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
+| DEQ | **~11%** | mismatch | 6 ³ | 0.854 ± 0.088 at σ=15% |
+| Diffusion | — ¹ | quantization | — ¹ | — ¹ |
 
-> **Reproducibility note:** DEQ (10%) and SSM/Transformer (≥15%) results are from fully reproducible sweeps on stable checkpoints. Neural ODE, EBM, and Diffusion model configurations were updated after the initial sweep run (hidden size and training hyperparameter changes); their ≥15% thresholds are directionally valid as lower bounds but have not been re-swept on the updated checkpoints. Flow (7%) used a revised ODE integration step (dt 0.25→0.01) in the current codebase; the threshold direction is expected to hold but the exact value is provisional. All results will be refreshed on next retraining.
+¹ Diffusion never reaches the 90% quality threshold at any σ tested. The score network's output is quantized at every DDIM step and errors accumulate across 20 inference steps, creating a ~12% quality floor even at σ=0. This is structural, not a mismatch problem — see ablation below.
+
+² Flow threshold uses the mismatch-only ablation sweep (ADC off) as the baseline; the combined mismatch sweep shows a σ=0 artifact (1.085 normalized quality due to quantization discretizing the Wasserstein metric). At σ=15% the ablation mean is 0.905 ± 0.096 — barely above the 0.90 threshold with wide variance, indicating a high-sensitivity transition zone rather than a clean threshold. Extended sweep to σ=30% confirms full degradation (0.842 at σ=20%).
+
+³ DEQ 6-bit minimum from ADC sweep at σ=0.05 mismatch. A σ=0 pure-quantization sweep (no mismatch) produced non-monotonic, high-variance results and is pending re-validation before any architectural precision-floor claim can be made. Run `sweep_all.py --only deq --adc-only --adc-sigma 0.0 --n-trials 200` to re-validate.
+
+**Key finding (conservative):** Five single-pass architectures (Neural ODE, SSM, EBM, Transformer, Flow) show no clean failure threshold within the σ=0–15% range, though Flow enters a high-variance transition zone near σ=15–20%. DEQ — the only architecture requiring iterative fixed-point convergence — shows a threshold near σ≈11% in the current sweep data (200 trials: mean=0.914 at σ=11%, drops to 0.892 at σ=12%), though this result is preliminary pending re-validation from the current checkpoint (see disclaimer). Diffusion's failure mode is structurally different: quantization accumulates across 20 DDIM inference steps regardless of mismatch level. Thermal noise is negligible across all architectures at demo-scale layer widths.
+
+> **SSM scope note:** The SSM experiment uses a diagonal S4D model (Gu et al. 2022) with fixed A, B, C matrices — not Mamba's selective SSM. Mamba's input-dependent B[t], C[t], Δ[t] projections introduce additional analog failure modes (mismatch in `x_proj`/`dt_proj` compounds through the selective mechanism per token) that are not captured here. These results characterize the recurrence structure shared by all diagonal SSMs; Mamba-specific tolerance is a separate study requiring instrumentation of the selective scan kernel.
 
 ### Figures (conservative profile)
-
-> **Figure note:** Figures reflect sweep data from the initial checkpoint run. Curves for Neural ODE, EBM, and Diffusion correspond to the prior model configurations (see reproducibility note above). DEQ and SSM/Transformer curves are current. Figures will be regenerated after retraining.
 
 <table>
 <tr>
@@ -80,32 +94,34 @@ The goal is to establish empirical baselines for which architectures are worth c
 <td><img src="experiments/cross_arch_tolerance/figures/fig4_deq_convergence.png" width="340"/><br><sub>Fig 4 — DEQ convergence failure rate (100% rate is a metric artifact — see note below)</sub></td>
 </tr>
 <tr>
-<td><img src="experiments/cross_arch_tolerance/figures/fig5_visual_results.png" width="340"/><br><sub>Fig 5 — Generated sample quality vs σ</sub></td>
+<td><img src="experiments/cross_arch_tolerance/figures/fig5_visual_results.png" width="340"/><br><sub>Fig 5 — Generated sample quality vs σ (see disclaimer above: Diffusion and EBM baselines are preliminary)</sub></td>
 <td><img src="experiments/cross_arch_tolerance/figures/fig6_output_mse.png" width="340"/><br><sub>Fig 6 — Output MSE vs σ</sub></td>
 </tr>
 </table>
 
-**Fig 4 note — DEQ convergence "100% failure rate":** This is a measurement artifact, not a real failure. The convergence check uses tol=1e-4 on a 64-dim vector (per-element threshold ~1.5×10⁻⁵), which is never satisfied in 30 unroll steps at any σ — including σ=0 with a perfectly trained model. The DEQ achieves ~93% test accuracy; spectral norm on W_z guarantees the fixed point exists and is unique. The figure correctly shows that the failure rate is *flat across all σ* (structural — not noise-induced), which is the actual finding.
+**Fig 4 note — DEQ convergence "100% failure rate":** This is a measurement artifact, not a real failure. The convergence check uses tol=1e-4 on a 64-dim vector (per-element threshold ~1.5×10⁻⁵), which is never satisfied in 30 unroll steps at any σ — including σ=0 with a perfectly trained model. Spectral norm on W_z guarantees the fixed point exists and is unique. The figure correctly shows that the failure rate is *flat across all σ* (structural — not noise-induced), which is the actual finding. Note: the DEQ checkpoint has a known provenance issue (see disclaimer above); the convergence flatness finding holds regardless, but the mismatch threshold (σ≈11%) should be treated as preliminary pending a re-sweep from the current checkpoint.
 
 ---
 
-### Results (50 trials, full-analog profile) — Preliminary
-
-> **Preliminary:** Full-analog results share the same sweep run as the conservative profile above and carry the same reproducibility caveats. Numbers for Neural ODE, EBM, Diffusion, and Flow are directional only and will be updated on re-sweep.
+### Results (full-analog profile)
 
 Full-analog defers ADC to the final readout only, removing per-layer quantization boundaries. For architectures compiled to crossbar arrays where a single output digitization step is feasible, this is the more physically realistic operating point.
 
-| Architecture | σ threshold @ 10% loss | Min ADC bits | Status |
-|---|---|---|---|
-| Neural ODE | ≥ 15% | 2 | Preliminary |
-| SSM | ≥ 15% | 4 | Current |
-| Diffusion | ≥ 15% | 4 | Preliminary |
-| Transformer | ≥ 15% | 2 | Current |
-| EBM | ≥ 15% | 4 | Preliminary |
-| DEQ | 10% | **4** | Current |
-| Flow | 5% | 2 | Provisional |
+| Architecture | σ threshold @ 10% loss | Min ADC bits |
+|---|---|---|
+| Neural ODE | ≥ 15% | 2 |
+| S4D (diagonal SSM) | ≥ 15% | 4 |
+| EBM | ≥ 15% | 4 |
+| Flow | ~15–20% ² | 4 |
+| Transformer | ≥ 15% | 2 |
+| DEQ | **~11%** | **4** |
+| Diffusion | — ¹ | — ¹ |
 
-**Key finding (full-analog):** Removing per-layer ADC does not change the ranking — mismatch remains the dominant failure mode, only in Flow and DEQ. DEQ's ADC requirement drops from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. Flow's threshold tightens from 7% to 5%, suggesting per-layer quantization was inadvertently regularizing the velocity field.
+¹ Diffusion's structural quantization floor persists even under full-analog: deferring ADC to the final readout doesn't help because the score network's output (not the state) is quantized at each DDIM step.
+
+² See conservative profile footnote ².
+
+**Key finding (full-analog):** Removing per-layer ADC does not change the mismatch ranking. DEQ's ADC requirement drops from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. All other thresholds are unchanged — confirming mismatch, not quantization, is the dominant analog failure mode for these architectures.
 
 ---
 

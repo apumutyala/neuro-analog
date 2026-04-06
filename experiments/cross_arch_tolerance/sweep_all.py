@@ -24,6 +24,9 @@ Usage:
     python experiments/cross_arch_tolerance/sweep_all.py --only diffusion --analog-substrate extropic_dtm
     python experiments/cross_arch_tolerance/sweep_all.py --analog-substrate all  # all substrates for all arches
     python experiments/cross_arch_tolerance/sweep_all.py --analog-domain both  # conservative + full_analog
+    python experiments/cross_arch_tolerance/sweep_all.py --sigma-values "0.0,0.05,0.10,0.15,0.20,0.25,0.30"
+    python experiments/cross_arch_tolerance/sweep_all.py --adc-only --adc-sigma 0.0  # isolate pure quantization
+    python experiments/cross_arch_tolerance/sweep_all.py --adc-only --adc-bits "2,4,6,8,10,12,16,20,32"
 """
 
 import os
@@ -74,7 +77,21 @@ _ALL_SUBSTRATES_BY_NAME = {
 _DEFAULT_SUBSTRATE = {name: subs[0] for name, subs in _ALL_SUBSTRATES_BY_NAME.items()}
 
 
-def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog_substrate: str = "classic", analog_domain: str = "conservative") -> None:
+def sweep_one(
+    name: str,
+    module,
+    n_trials: int = 50,
+    force: bool = False,
+    analog_substrate: str = "classic",
+    analog_domain: str = "conservative",
+    sigma_values: list | None = None,
+    adc_sigma: float = 0.05,
+    adc_bits: list | None = None,
+    adc_only: bool = False,
+) -> None:
+    sigma_values = sigma_values if sigma_values is not None else _SIGMA_VALUES
+    adc_bits = adc_bits if adc_bits is not None else _BIT_VALUES
+
     ckpt_path = str(_CKPT_DIR / f"{name}.pt")
     if not os.path.exists(ckpt_path):
         print(f"[{name}] No checkpoint found. Run train_all.py first.")
@@ -89,12 +106,14 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     suffix = domain_suffix + substrate_suffix
 
     result_path = _RESULTS_DIR / f"{name}_mismatch{suffix}.json"
-    if result_path.exists() and not force:
+    if not adc_only and result_path.exists() and not force:
         print(f"[{name}] Results exist ({analog_domain}/{analog_substrate}), skipping. (--force to re-run)")
         return
 
     print(f"\n{'='*50}")
     print(f"Sweeping {module.get_family_name()} ({name}), n_trials={n_trials}, domain={analog_domain}, substrate={analog_substrate}")
+    if adc_only:
+        print(f"  ADC-only mode: adc_sigma={adc_sigma}, bits={adc_bits}")
     print(f"{'='*50}")
 
     model = module.load_model(ckpt_path)
@@ -134,29 +153,30 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     # would clip ~32% of samples and corrupt the generation baseline.
     gaussian_kwargs = {"v_ref_input": 3.3} if name in _GAUSSIAN_INPUT_MODELS else {}
 
-    # 1. Mismatch sweep
-    print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
-    t0 = time.time()
-    result = mismatch_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES, n_trials=n_trials,
-                            calibration_data=calib_data_to_use, analog_domain=analog_domain,
-                            **gaussian_kwargs)
-    result.save(str(_RESULTS_DIR / f"{name}_mismatch{suffix}.json"))
-    print(f"  Done in {time.time()-t0:.0f}s. Threshold@10%: {result.degradation_threshold():.3f}")
+    if not adc_only:
+        # 1. Mismatch sweep
+        print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
+        t0 = time.time()
+        result = mismatch_sweep(model, eval_fn, sigma_values=sigma_values, n_trials=n_trials,
+                                calibration_data=calib_data_to_use, analog_domain=analog_domain,
+                                **gaussian_kwargs)
+        result.save(str(_RESULTS_DIR / f"{name}_mismatch{suffix}.json"))
+        print(f"  Done in {time.time()-t0:.0f}s. Threshold@10%: {result.degradation_threshold():.3f}")
 
-    # 2. Ablation sweep
-    print(f"\n[{name}] Ablation sweep ({analog_domain})...")
-    t0 = time.time()
-    ablation = ablation_sweep(model, eval_fn, sigma_values=_SIGMA_VALUES,
-                              n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use,
-                              analog_domain=analog_domain, **gaussian_kwargs)
-    for noise_type, res in ablation.items():
-        res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}{suffix}.json"))
-    print(f"  Done in {time.time()-t0:.0f}s")
+        # 2. Ablation sweep
+        print(f"\n[{name}] Ablation sweep ({analog_domain})...")
+        t0 = time.time()
+        ablation = ablation_sweep(model, eval_fn, sigma_values=sigma_values,
+                                  n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use,
+                                  analog_domain=analog_domain, **gaussian_kwargs)
+        for noise_type, res in ablation.items():
+            res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}{suffix}.json"))
+        print(f"  Done in {time.time()-t0:.0f}s")
 
     # 3. ADC sweep
-    print(f"\n[{name}] ADC precision sweep ({analog_domain})...")
+    print(f"\n[{name}] ADC precision sweep ({analog_domain}, sigma_mismatch={adc_sigma})...")
     t0 = time.time()
-    adc_result = adc_sweep(model, eval_fn, bit_values=_BIT_VALUES, sigma_mismatch=0.05,
+    adc_result = adc_sweep(model, eval_fn, bit_values=adc_bits, sigma_mismatch=adc_sigma,
                            n_trials=max(20, n_trials//2), calibration_data=calib_data_to_use,
                            analog_domain=analog_domain, **gaussian_kwargs)
     adc_result.save(str(_RESULTS_DIR / f"{name}_adc{suffix}.json"))
@@ -165,7 +185,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
     # 4. Output MSE sweep (direct corruption measurement)
     # Only run for conservative domain (MSE is domain-agnostic: it measures
     # output divergence regardless of quantization profile)
-    if analog_domain == "conservative":
+    if not adc_only and analog_domain == "conservative":
         print(f"\n[{name}] Output MSE sweep...")
         t0 = time.time()
         import numpy as np
@@ -174,9 +194,9 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         digital_model = module.load_model(ckpt_path)
 
         # MSE sweep: compare analog vs digital outputs at each sigma
-        per_trial_mse = np.zeros((len(_SIGMA_VALUES), n_trials), dtype=np.float64)
+        per_trial_mse = np.zeros((len(sigma_values), n_trials), dtype=np.float64)
 
-        for i, sigma in enumerate(_SIGMA_VALUES):
+        for i, sigma in enumerate(sigma_values):
             for j in range(n_trials):
                 analog_model = analogize(digital_model, sigma_mismatch=sigma, n_adc_bits=8,
                                          **gaussian_kwargs)
@@ -199,7 +219,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         # Save MSE results
         from neuro_analog.simulator import SweepResult
         mse_result = SweepResult(
-            sigma_values=_SIGMA_VALUES,
+            sigma_values=sigma_values,
             metric_name="output_mse",
             per_trial=per_trial_mse,
             digital_baseline=0.0,  # MSE at sigma=0 is baseline
@@ -208,12 +228,12 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
         print(f"  Done in {time.time()-t0:.0f}s")
 
     # 5. DEQ-specific: convergence failure rate
-    if name == "deq" and analog_domain == "conservative" and hasattr(module, "evaluate_convergence_failure"):
+    if not adc_only and name == "deq" and analog_domain == "conservative" and hasattr(module, "evaluate_convergence_failure"):
         print(f"\n[DEQ] Convergence failure rate sweep...")
         failure_rates = []
         from models.deq import _get_data
         (_, _), (X_test, _) = _get_data()
-        for sigma in _SIGMA_VALUES:
+        for sigma in sigma_values:
             rates = []
             for _ in range(max(10, n_trials // 5)):
                 analog_model = analogize(model, sigma_mismatch=sigma)
@@ -226,7 +246,7 @@ def sweep_one(name: str, module, n_trials: int = 50, force: bool = False, analog
             print(f"  sigma={sigma:.3f}: failure_rate={failure_rates[-1]:.3f}")
 
         deq_extra = {
-            "sigma_values": _SIGMA_VALUES,
+            "sigma_values": sigma_values,
             "convergence_failure_rate": failure_rates,
         }
         with open(_RESULTS_DIR / "deq_convergence.json", "w") as f:
@@ -259,9 +279,40 @@ def main():
             "both: run both profiles and save separate result files."
         ),
     )
+    parser.add_argument(
+        "--sigma-values", type=str, default=None,
+        help=(
+            "Comma-separated list of sigma values to sweep, e.g. '0.0,0.05,0.10,0.20,0.30'. "
+            "Default: 0.0,0.01,0.02,0.03,0.05,0.07,0.10,0.12,0.15"
+        ),
+    )
+    parser.add_argument(
+        "--adc-sigma", type=float, default=0.05,
+        help="Mismatch sigma used during ADC precision sweep. Set to 0.0 for pure quantization isolation.",
+    )
+    parser.add_argument(
+        "--adc-bits", type=str, default=None,
+        help=(
+            "Comma-separated list of ADC bit widths to sweep, e.g. '2,4,6,8,10,12,16,20,32'. "
+            "Default: 2,4,6,8,10,12,16"
+        ),
+    )
+    parser.add_argument(
+        "--adc-only", action="store_true",
+        help="Skip mismatch/ablation/MSE sweeps — run only the ADC precision sweep.",
+    )
     args = parser.parse_args()
 
     domains = ["conservative", "full_analog"] if args.analog_domain == "both" else [args.analog_domain]
+
+    sigma_values = (
+        [float(x) for x in args.sigma_values.split(",")]
+        if args.sigma_values else None
+    )
+    adc_bits = (
+        [int(x) for x in args.adc_bits.split(",")]
+        if args.adc_bits else None
+    )
 
     # "all" expands per-architecture to all supported substrates.
     # Substrate-agnostic architectures (transformer, ebm, ssm) always run once under their default.
@@ -281,7 +332,9 @@ def main():
             substrates = get_substrates(name)
             for substrate in substrates:
                 sweep_one(name, module, n_trials=args.n_trials, force=args.force,
-                          analog_substrate=substrate, analog_domain=domain)
+                          analog_substrate=substrate, analog_domain=domain,
+                          sigma_values=sigma_values, adc_sigma=args.adc_sigma,
+                          adc_bits=adc_bits, adc_only=args.adc_only)
 
     print(f"\nAll sweeps done in {time.time()-total_t0:.0f}s")
     print(f"Results in: {_RESULTS_DIR}")
