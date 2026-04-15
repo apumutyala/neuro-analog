@@ -2,10 +2,9 @@
 
 The machine learning model zoo has diversified. State-space models (S4, Mamba), deep equilibrium networks (DEQs), normalizing flows, energy-based models, and diffusion models are now deployment candidates alongside transformers and CNNs. At the same time, analog in-memory computing (AIMC) hardware is maturing - IBM's PCM arrays, Mythic's flash-based compute, Celestial AI's photonic interconnects - all promising 10-100x energy reduction for inference.
 
-These two trends haven't been studied together. Does the computational structure of a neural architecture determine its analog tolerance? If DEQ iterates 30 times, does mismatch compound? If diffusion sampling takes 20 steps, does quantization accumulate? Does it matter whether you're classifying images or modeling language?
+Codesign of analog hardware and emerging neural architectures is a key enabler for both energy-efficient AI and scaling towards general distributed intelligence on the edge. The inherent computational structure of each architecture interacts with different analog substrates, and their nonidealities, in unique ways. Some architectures are more robust to certain types of noise than others, while others leverage that noise to perform their key computations, maximizing the compute efficiency of the analog substrate for accelerating deep learning.
 
-This repository is our empirical answer.
-
+This repository is a framework to help provide a basis and spur research in this niche but critical emerging area of digital/analog and neural network architecture co-design.
 ---
 
 ## What We're Doing
@@ -85,7 +84,9 @@ The pilot used toy models on toy tasks. The unified benchmark uses real architec
 
 ### Why two tasks
 
-CIFAR-10 classification (32x32 images, 10 classes) and WikiText-2 language modeling (50K vocabulary, sequence length 256) stress different computational paths. Classification models collapse a spatial representation to a single prediction; language models maintain token-level predictions across a full sequence. An architecture's analog sensitivity on one may not predict its sensitivity on the other - SSMs benefit from their sequential inductive bias in LM, Diffusion LMs diffuse over embedding space, and DEQ LM uses causal attention inside each fixed-point step. Jointly measuring both tasks reveals whether the pilot findings generalize across modalities.
+CIFAR-10 classification (32x32 images, 10 classes) and WikiText-2 language modeling (50K vocabulary, sequence length 256) stress different computational paths. Classification models collapse a spatial representation to a single prediction; language models maintain token-level predictions across a full sequence. An architecture's analog sensitivity on one may not predict its sensitivity on the other - SSMs benefit from their sequential inductive bias in LM, Diffusion LMs diffuse over embedding space, and DEQ LM uses causal attention inside each fixed-point step. Jointly measuring both tasks reveals whether the pilot findings generalize across modalities. 
+
+Further, these are more representative of real-world applications and provide a more comprehensive evaluation of analog hardware compatibility. This is meant to show the potential of analog hardware and it's drawbacks in real-world applications.
 
 ### Architecture matrix
 
