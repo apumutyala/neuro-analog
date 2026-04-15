@@ -25,6 +25,23 @@ class Domain(Enum):
     HYBRID = auto()  # Analog-possible with accuracy tradeoff
 
 
+class TargetBackend(Enum):
+    """Hardware backend target for an operation or subgraph.
+    
+    This is SEPARATE from Domain. Domain classifies the computational semantics
+    (analog-native, digital-required, hybrid approximation). TargetBackend specifies
+    the deployment substrate (analog circuit, FPGA, ASIC RTL, mixed-signal).
+    
+    IMPORTANT: Do NOT conflate with Domain.HYBRID. Domain.HYBRID means
+    "analog-possible with accuracy tradeoff" (approximation quality signal).
+    Mixed-signal RTL boundaries use is_mixed_signal_boundary field instead.
+    """
+    ANALOG_CIRCUIT = auto()   # Analog circuit implementation (crossbar, integrator, etc.)
+    FPGA_INFERENCE = auto()   # FPGA inference (HLS4ML, FINN)
+    ASIC_RTL = auto()         # ASIC RTL synthesis (VHDL/SystemVerilog)
+    MIXED_SIGNAL = auto()     # Mixed-signal integration (analog + digital RTL)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Operation type taxonomy
 # ──────────────────────────────────────────────────────────────────────
@@ -59,6 +76,7 @@ class OpType(Enum):
     LAYER_NORM = auto()         # mean + variance + sqrt + division
     GROUP_NORM = auto()         # per-group normalization
     RMS_NORM = auto()           # root mean square normalization
+    BATCH_NORM = auto()         # batch normalization (mean + var + scale + shift)
     SOFTPLUS = auto()           # log(1 + exp(x))
     SILU = auto()               # x · σ(x) — SiLU/Swish
     GELU = auto()               # x · Φ(x)
@@ -66,6 +84,8 @@ class OpType(Enum):
     DYNAMIC_MATMUL = auto()     # Data-dependent matrix multiply (Q·K^T, attn·V)
     RESHAPE = auto()            # Tensor reshape/permute (zero-compute, routing)
     EMBEDDING = auto()          # Token/position embedding lookup
+    MAX_POOL = auto()           # Max pooling (spatial downsampling)
+    DROPOUT = auto()            # Stochastic dropout (training-only, zero-compute at inference)
     
     # ── Hybrid operations ────────────────────────────────────────────
     KERNEL_ATTENTION = auto()   # FAVOR+ kernel approximation of softmax attention
@@ -265,8 +285,26 @@ class AnalogAmenabilityProfile:
     noise_score: float = 0.0        # Fraction of analog FLOPs meeting SNR targets
     overall_score: float = 0.0      # Weighted composite
     
-    def compute_scores(self, weights: dict[str, float] | None = None):
-        """Compute composite scores from raw metrics."""
+    def compute_scores(self, weights: dict[str, float] | None = None, target_backend: 'TargetBackend | None' = None):
+        """Compute composite scores from raw metrics.
+        
+        Args:
+            weights: Scoring weights (dynamics, precision, boundary, noise, analog_frac).
+            target_backend: Target hardware backend. If specified and not ANALOG_CIRCUIT,
+                raises ValueError (analog-physics scoring not valid for digital backends).
+        
+        Raises:
+            ValueError: If target_backend is not None and not ANALOG_CIRCUIT.
+        """
+        # Guard: analog-physics scoring only applies to analog-circuit backends.
+        # FPGA/ASIC/mixed-signal backends require separate scoring semantics.
+        if target_backend is not None and target_backend != TargetBackend.ANALOG_CIRCUIT:
+            raise ValueError(
+                f"AnalogAmenabilityProfile.compute_scores() applies analog-physics "
+                f"criteria (thermal noise, stiffness, dynamics) that are not valid for "
+                f"{target_backend.name} backend. Use backend-specific scoring instead."
+            )
+        
         if weights is None:
             weights = {"dynamics": 0.25, "precision": 0.25, "boundary": 0.15, "noise": 0.20, "analog_frac": 0.15}
         
