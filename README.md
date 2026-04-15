@@ -5,6 +5,7 @@ The machine learning model zoo has diversified. State-space models (S4, Mamba), 
 Codesign of analog hardware and emerging neural architectures is a key enabler for both energy-efficient AI and scaling towards general distributed intelligence on the edge. The inherent computational structure of each architecture interacts with different analog substrates, and their nonidealities, in unique ways. Some architectures are more robust to certain types of noise than others, while others leverage that noise to perform their key computations, maximizing the compute efficiency of the analog substrate for accelerating deep learning.
 
 This repository is a framework to help provide a basis and spur research in this niche but critical emerging area of digital/analog and neural network architecture co-design.
+
 ---
 
 ## What We're Doing
