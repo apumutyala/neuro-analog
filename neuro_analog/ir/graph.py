@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Iterator  # noqa: F401 — kept for any callers that import it
 
 from .types import (
-    ArchitectureFamily, AnalogAmenabilityProfile, Domain, DynamicsProfile, OpType,
+    ArchitectureFamily, AnalogAmenabilityProfile, Domain, DynamicsProfile, OpType, TargetBackend,
 )
 from .node import AnalogNode
 
@@ -97,7 +97,17 @@ class AnalogGraph:
                 boundaries.append(DABoundary(src_id, tgt_id, src.domain, tgt.domain))
         return boundaries
 
-    def analyze(self) -> AnalogAmenabilityProfile:
+    def analyze(self, target_backend: TargetBackend | None = None) -> AnalogAmenabilityProfile:
+        """Compute analog amenability profile for this graph.
+        
+        Args:
+            target_backend: Target hardware backend. If specified and not ANALOG_CIRCUIT,
+                compute_scores() will raise an error (analog-physics scoring not valid).
+                If None (default), assumes analog-circuit backend (legacy behavior).
+        
+        Returns:
+            AnalogAmenabilityProfile with computed scores.
+        """
         fractions = self.flop_fractions()
         boundaries = self.find_da_boundaries()
 
@@ -118,7 +128,7 @@ class AnalogGraph:
             da_boundary_count=len(boundaries), dynamics=self._dynamics,
             min_weight_precision_bits=min_bits,
         )
-        profile.compute_scores()
+        profile.compute_scores(target_backend=target_backend)
         return profile
 
     def summary_table(self) -> str:
@@ -140,11 +150,27 @@ class AnalogGraph:
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
-        return {
-            "name": self.name, "family": self.family.value, "model_params": self.model_params,
-            "nodes": [{
+        """Serialize graph to dict (JSON-compatible).
+        
+        Includes target_backend and is_mixed_signal_boundary when set, but omits
+        them when unset (backward compatibility with analog-only graphs).
+        """
+        nodes_data = []
+        for n in self._nodes.values():
+            node_dict = {
                 "id": n.node_id, "name": n.name, "op_type": n.op_type.name,
                 "domain": n.domain.name, "flops": n.flops, "param_count": n.param_count,
-            } for n in self._nodes.values()],
+            }
+            # Include target_backend if set
+            if n.target_backend is not None:
+                node_dict["target_backend"] = n.target_backend.name
+            # Include is_mixed_signal_boundary if True (omit if False for compactness)
+            if n.is_mixed_signal_boundary:
+                node_dict["is_mixed_signal_boundary"] = True
+            nodes_data.append(node_dict)
+        
+        return {
+            "name": self.name, "family": self.family.value, "model_params": self.model_params,
+            "nodes": nodes_data,
             "edges": self._edges,
         }
