@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 import uuid
 
-from .types import OpType, Domain, PrecisionSpec, HardwareEstimate, NoiseSpec
+from .types import OpType, Domain, TargetBackend, PrecisionSpec, HardwareEstimate, NoiseSpec
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -116,6 +116,13 @@ class AnalogNode:
     
     # Noise model
     noise: Optional[NoiseSpec] = None
+    
+    # Backend targeting (optional; None = default analog-circuit behavior)
+    target_backend: Optional[TargetBackend] = None
+    
+    # Mixed-signal boundary flag (separate from Domain.HYBRID semantic)
+    # True if this node is at an analog/digital RTL domain crossing point
+    is_mixed_signal_boundary: bool = False
     
     def __post_init__(self):
         """Set default domain based on op_type if not explicitly provided."""

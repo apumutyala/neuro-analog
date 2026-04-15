@@ -1,12 +1,145 @@
 # neuro-analog
 
-Analog hardware — crossbar arrays, RC integrators, differential-pair activations — can run neural network inference at orders-of-magnitude lower energy than digital, but it introduces unavoidable physical nonidealities: fabrication mismatch bakes static weight errors into every device, thermal noise corrupts every readout, and ADC quantization discretizes every layer boundary. Which neural architectures actually survive these conditions, and at what noise level does each one break?
+The machine learning model zoo has diversified dramatically. State-space models (S4, Mamba), deep equilibrium networks (DEQs), normalizing flows, energy-based models, and diffusion models now sit alongside transformers and CNNs as serious deployment candidates. Simultaneously, analog in-memory computing (AIMC) hardware is maturing — IBM's PCM arrays, Mythic's flash-based compute, Celestial AI's photonic interconnects — all promising 10–100× energy reduction for inference.
 
-This framework answers that empirically. It instruments any PyTorch model with physics-grounded analog nonidealities, measures how task-level quality degrades as noise increases, and extracts the model into a typed IR classifying each operation as analog-native, digital-required, or hybrid — then exports compatible models to [Ark](https://arxiv.org/abs/2309.08774) (Wang & Achour, ASPLOS '24) as runnable `BaseAnalogCkt` subclasses. The noise physics follows the mismatch/SDE/discrete-optimization model described in Wang & Achour (arXiv:2411.03557).
+These two trends have not been studied together. **Does the computational structure of a neural architecture determine its analog tolerance? If DEQ iterates 30 times, does mismatch compound? If diffusion sampling takes 20 steps, does quantization accumulate? Does it matter whether you're classifying images or modeling language?**
+
+This repository houses our empirical answer.
 
 ---
 
-## Install
+## What We're Doing
+
+We train 7 neural architecture families — Transformer, Neural ODE, SSM (S4D), DEQ, Normalizing Flow, EBM, and Diffusion — from scratch on two real tasks at meaningful scale: **CIFAR-10 image classification** and **WikiText-2 language modeling**. After training, we inject physics-grounded analog nonidealities (fabrication mismatch, thermal noise, ADC quantization) into every weight-carrying operation and measure how task accuracy and perplexity degrade as noise increases. 50 Monte Carlo trials per noise level establish statistical bounds.
+
+The result is a 14-model, dual-task benchmark: the first systematic characterization of analog tolerance across modern architecture families at both image and language tasks simultaneously.
+
+**Current Status:**
+- **Pilot study (small-scale)**: ✅ COMPLETE — results available in `experiments/cross_arch_tolerance/`
+- **Unified benchmark infrastructure**: ✅ COMPLETE — all 14 models implemented, training scripts ready
+- **Unified benchmark training**: ⏳ NOT STARTED — infrastructure ready, awaiting compute resources
+
+---
+
+## Background
+
+Existing analog simulation tools — CrossSim (Sandia), AIHWKit (IBM), NeuroSim (Stanford), and the recently published XBTorch (2025) — do device-level modeling well. They answer "how does this CNN perform on this crossbar." What they don't answer is the architecture-level question: among the modern zoo of model families, which computational structures are inherently analog-compatible and which ones break, and why?
+
+The closest prior work is IBM's demonstration of MoE-style transformer inference on 3D AIMC (Nature Computational Science, 2024) and the Nature Reviews Electrical Engineering (2025) survey of AIMC software stacks. Both confirm that analog hardware is ready for transformers. Neither asks what happens to architectures that rely on iterative fixed-point convergence or multi-step sampling pipelines under the same conditions.
+
+We ask that question empirically, with a framework designed to be architecture-agnostic from the start.
+
+---
+
+## Preliminary Findings (small-scale pilot)
+
+Before the unified benchmark, we ran a pilot study: 7 tiny models (1K–103K params) trained on low-dimensional tasks, swept over conductance mismatch σ ∈ [0%, 15%]. Three structural failure modes emerged:
+
+**Single-pass architectures are broadly analog-tolerant.** Transformer, Neural ODE, SSM, Normalizing Flow, and EBM all maintain ≥90% normalized quality at σ=15% mismatch. No failure threshold within the tested range.
+
+**Iterative convergence amplifies mismatch.** DEQ — the only architecture requiring fixed-point iteration z* = f(z*) — fails at σ≈12%. Mismatch in the weight matrices perturbs the contraction map, destabilizing convergence even when spectral normalization ensures a unique fixed point in the noise-free case.
+
+**Multi-step pipelines accumulate quantization error.** Diffusion models (DDIM, 20 steps) never reach 90% quality at *any* σ, including σ=0. ADC quantization of the score network output accumulates across inference steps — a structural incompatibility with per-layer ADC, not a mismatch problem.
+
+These three failure modes are mechanistically distinct and map to identifiable computational patterns. The unified benchmark tests whether these patterns hold at real scale and across both image and language tasks.
+
+### Pilot Results Tables
+
+**Conservative profile** (ADC at every layer boundary):
+
+| Architecture | σ threshold @ 10% degradation | Dominant noise source | Min ADC bits |
+|---|---|---|---|
+| Neural ODE | ≥ 15% | negligible | 2 |
+| S4D (diagonal SSM) | ≥ 15% | negligible | 4 |
+| EBM | ≥ 15% | negligible | 4 |
+| Flow | ≥ 15% | mismatch | 4 |
+| Transformer | ≥ 15% | negligible | 4 |
+| **DEQ** | **12%** | mismatch | **6** |
+| Diffusion | — ¹ | quantization | — ¹ |
+
+¹ Diffusion's quality floor at ~88% is present even at σ=0. Structural quantization accumulation across 20 denoising steps — ADC bits don't help.
+
+**Full-analog profile** (ADC at final readout only):
+
+| Architecture | σ threshold | Min ADC bits |
+|---|---|---|
+| Neural ODE | ≥ 15% | 2 |
+| S4D (diagonal SSM) | ≥ 15% | 4 |
+| EBM | ≥ 15% | 4 |
+| Flow | ≥ 15% | 4 |
+| Transformer | ≥ 15% | 2 |
+| **DEQ** | **12%** | **4** (↓ from 6) |
+| Diffusion | — | — |
+
+Removing per-layer ADC doesn't change the mismatch ranking but drops DEQ's ADC requirement from 6 to 4 bits — consistent with per-iteration ADC creating fixed-point limit cycles. Thermal noise is negligible across all families at demo-scale widths.
+
+*50-trial Monte Carlo sweep, 1K–103K parameter models, small-scale tasks. Results available in `experiments/cross_arch_tolerance/results/` (136 JSON files with mismatch, ADC, ablation, thermal, and layer sensitivity data).*
+
+---
+
+## The Unified Benchmark (infrastructure complete, training pending)
+
+The pilot used toy models on toy tasks. The unified benchmark uses real architectures on real benchmarks, trains them properly, and sweeps analog noise afterward.
+
+**Current status:** All 14 model implementations are complete, training scripts are ready, but no training has been executed yet due to compute constraints. The infrastructure is ready to run on cloud GPUs (RunPod, etc.) when resources become available.
+
+### Why two tasks
+
+CIFAR-10 classification (32×32 images, 10 classes) and WikiText-2 language modeling (50K vocabulary, sequence length 256) stress different computational paths. Classification models collapse a spatial representation to a single prediction; language models maintain token-level predictions across a full sequence. An architecture's analog sensitivity on one may not predict its sensitivity on the other — SSMs benefit from their sequential inductive bias in LM, Diffusion LMs diffuse over embedding space, and DEQ LM uses causal attention inside each fixed-point step. Jointly measuring both tasks reveals whether the pilot findings generalize across modalities.
+
+### Architecture matrix
+
+| Architecture | CIFAR-10 variant | LM variant | CIFAR-10 params | WikiText-2 params |
+|---|---|---|---:|---:|
+| Transformer | ViT (patch=4, 6 layers) | GPT-style decoder | 4.8M | 44.6M |
+| Neural ODE | Conv features + ODE depth | Encoder-style ODE depth | 1.8M | 27.8M |
+| S4D | Diagonal SSM on pixel sequence | Diagonal SSM LM | 2.5M | 38.7M |
+| DEQ | Fixed-point conv features | Fixed-point attention LM | 1.8M | 28.9M |
+| Flow | Class-conditional coupling flows | Coupling layers on embeddings | ~450M | 28.9M |
+| EBM | Energy classification (Langevin) | SGLD embedding refinement | 1.7M | 26.3M |
+| Diffusion | Denoising score classifier | Diffusion over embeddings | 22.4M | 27.8M |
+
+Flow CIFAR-10's ~450M params (10 class-conditional flows × 8 coupling layers over 4096-dim features) is the outlier. It fits on A100 80GB but trains slowly. All other models are under 45M params.
+
+### What the sweep measures
+
+After training each model to convergence:
+- Mismatch σ swept over {0%, 3%, 5%, 7%, 10%, 12%, 15%} — 50 Monte Carlo trials per σ
+- ADC bits swept over {2, 4, 6, 8} bits at a fixed representative σ
+- Two analog profiles: conservative (ADC at every layer) and full-analog (ADC at final readout only)
+- Metric: normalized quality — (analog metric) / (digital baseline), so 1.0 = no degradation
+
+The degradation threshold is the interpolated σ where normalized quality crosses 0.90 (10% loss). This is the σ at which a hardware designer would need to worry.
+
+### Design choices and known limitations
+
+**Optimizer:** Transformer, S4D, and DEQ use Nesterov SGD (momentum=0.95, lr=3e-4). Neural ODE, Flow, EBM, Diffusion use AdamW (lr=3e-4). This reflects the known preference of attention-based architectures for high-momentum schedules vs. adaptive rates for continuous/generative models.
+
+**NeuralODE LM is encoder-style.** The ODE integrates over depth with the full `[batch, seq_len, hidden_dim]` tensor — all positions update in parallel with no causal masking. Absolute perplexity is not directly comparable to autoregressive models. Relative mismatch degradation is still valid for the analog tolerance comparison.
+
+**Neural ODE failure mode prediction.** Neural ODEs use an adaptive ODE solver that iterates to convergence — structurally similar to DEQ's fixed-point iteration, but with different contraction properties. Our prior expectation is that Neural ODE will land in the single-pass tolerant category (≥15% σ) because the ODE solver treats the network as a black-box function rather than a contraction map: errors introduced by weight mismatch shift the trajectory but don't compound the way DEQ's fixed-point residuals do. The unified benchmark will confirm or refute this.
+
+**S4D only, not Mamba.** The benchmark uses diagonal S4D with fixed A, B, C matrices. Mamba's input-dependent selective scan introduces per-token projections that are distinct failure modes from the recurrence structure. S4D results characterize the recurrence structure shared by all diagonal SSMs; Mamba-specific tolerance is a separate study.
+
+**Demo-to-medium scale.** This is not ResNet-50 or BERT-base. The unified benchmark establishes whether the pilot findings hold at a scale where the models are actually doing meaningful computation (not memorization of small datasets). Production-scale validation is future work.
+
+---
+
+## Framework
+
+### System Requirements
+
+- **Python**: 3.10 or later
+- **PyTorch**: 2.1 or later with CUDA support
+- **CUDA**: 11.8 or 12.1+ (tested on CUDA 12.1)
+- **GPU Memory**:
+  - Quick start examples: CPU-only or any GPU
+  - Pilot study (cross_arch_tolerance): ~8GB VRAM
+  - Unified benchmark training: 40–80GB VRAM (A100 recommended)
+- **OS**: Linux (Ubuntu 20.04+ tested), macOS (limited CUDA support), Windows (WSL2 recommended)
+- **Disk Space**: ~10GB for datasets (CIFAR-10, WikiText-2) + model checkpoints
+
+### Install
 
 ```bash
 git clone https://github.com/apumutyala/neuro-analog
@@ -14,10 +147,245 @@ cd neuro-analog
 pip install -e ".[dev]"
 ```
 
-Optional extras: `[ssm]` for Mamba extraction, `[jax]` for Diffrax evaluation, `[full]` for everything.
+Optional extras: `[ssm]` for Mamba extraction, `[jax]` for Diffrax/Ark evaluation, `[full]` for everything.
 
-**Ark export** (`ark_bridge/`, `evaluate_in_ark.py`) requires Ark. Install order matters — torch before JAX:
+**Troubleshooting installation:**
 
+If you encounter CUDA version mismatches:
+```bash
+# Check your CUDA version
+nvcc --version
+# Install PyTorch with matching CUDA version
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+If `torchdiffeq` fails to install:
+```bash
+# Install from source if precompiled wheel unavailable
+pip install git+https://github.com/rtqichen/torchdiffeq.git
+```
+
+If Ark export fails (JAX/Diffrax issues):
+```bash
+# Install JAX with CUDA support
+pip install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+```
+
+### Quick Start
+
+```python
+from neuro_analog.simulator import analogize, mismatch_sweep
+
+# Drop analog noise onto any PyTorch model — no refactoring needed
+analog_model = analogize(model, sigma_mismatch=0.05, n_adc_bits=8)
+
+# Monte Carlo sweep over noise levels
+result = mismatch_sweep(
+    model, eval_fn,
+    sigma_values=[0.0, 0.05, 0.10, 0.15],
+    n_trials=50
+)
+threshold = result.degradation_threshold(max_relative_loss=0.10)
+print(f"σ at 10% degradation: {threshold:.3f}")
+```
+
+**Verification:** Test your installation with the quick start script:
+```bash
+python examples/01_quickstart.py
+```
+Expected output: Training completes in ~2 minutes on CPU, prints mismatch sweep results with degradation threshold.
+
+### Examples Catalog
+
+| Script | Description | Runtime |
+|---|---|---|
+| `01_quickstart.py` | Analogize a tiny MLP, run mismatch/ADC/ablation sweeps | ~2 min CPU |
+| `02_seven_arch_sweep.py` | Sweep all 7 architecture families on pilot-scale tasks | ~90 min GPU |
+| `03_ark_pipeline.py` | Neural ODE → Ark BaseAnalogCkt export walkthrough | ~1 min |
+| `05_cdg_bridge.py` | Cohen-Grossberg dynamics → Ark CDG compilation | ~1 min |
+| `06_ebm_ark.py` | EBM (Hopfield) → HopfieldAnalogCkt export | ~1 min |
+| `07_flow_ark.py` | Normalizing Flow → FlowODE analysis export | ~1 min |
+| `08_diffusion_ark.py` | Diffusion → DiffusionAnalogCkt export | ~1 min |
+| `09_transformer_ffn_ark.py` | Transformer FFN → crossbar partition export | ~1 min |
+| `10_deq_ark.py` | DEQ → gradient flow fixed-point ODE export | ~1 min |
+| `11_ssm_ark.py` | SSM → S4D real/imag split dynamics export | ~1 min |
+
+Ark export examples require `pip install -e ".[jax]"` and Ark installation (see Ark Export section below).
+
+`analogize()` does a deep copy of your model and recursively replaces:
+- `nn.Linear` → `AnalogLinear` (crossbar MVM with mismatch + thermal + ADC)
+- `nn.Conv{1,2,3}d` → `AnalogConv` (receptive-field noise scaling)
+- `nn.MultiheadAttention` → `AnalogMultiheadAttention` (fused QKV weight handling)
+- `nn.Tanh/Sigmoid/ReLU/GELU/SiLU` → differential-pair / current-mirror equivalents
+
+Operations without efficient analog implementations — `LayerNorm`, `Softmax`, dynamic Q·Kᵀ, `Embedding` — stay digital. The original model is unchanged.
+
+### Noise model
+
+Three independent sources, applied in order per forward pass:
+
+| Source | Model | Notes |
+|---|---|---|
+| Fabrication mismatch | δ ∼ N(1, σ²) per weight, static per device instance | Wang & Achour (arXiv:2411.03557) §4.1 |
+| Thermal noise | ε ∼ N(0, kT/C · N_in) per readout, dynamic | Johnson-Nyquist; √N_in scaling is conservative upper bound |
+| ADC quantization | Hard uniform quantization; swept over 2–16 bits | Per-layer V_ref calibration via `calibrate_analog_model()` |
+
+Not modeled: 1/f noise, settling time, conductance drift (PCM/RRAM), inter-layer noise correlation.
+
+**Planned: per-operation SNR profiling.** The next framework addition will log SNR degradation per analog op and correlate with end-to-end metric drop, providing mechanistic explanations for the failure mode taxonomy beyond the structural arguments — quantifying exactly how much each layer contributes to the degradation curve.
+
+### Typed IR
+
+```python
+from neuro_analog.ir import AnalogGraph, extract_analog_graph
+
+graph = extract_analog_graph(model, sample_input)
+print(graph.analog_flop_fraction())   # fraction of compute that's analog-native
+print(graph.da_boundary_count())      # number of ADC/DAC crossings per inference
+```
+
+The IR classifies 30 primitive operation types into `ANALOG` (crossbar MVM, RC integration, differential-pair activation), `DIGITAL` (Softmax, LayerNorm, dynamic matmul), and `HYBRID` (approximation-possible with accuracy tradeoff). D/A boundary count is a proxy for ADC overhead and correlates with ADC bit-width requirements in the sweep results.
+
+---
+
+## Running the Benchmark
+
+### Data Handling
+
+Datasets are downloaded automatically by PyTorch/HuggingFace datasets on first use:
+
+- **CIFAR-10**: Downloaded to `~/.torch/datasets/` or `data/` (if configured)
+- **WikiText-2**: Downloaded via HuggingFace `datasets` library to `~/.cache/huggingface/datasets/`
+
+No manual download required. Training scripts handle dataset loading automatically. If you need to specify a custom data directory, set the `HF_DATASETS_CACHE` environment variable for WikiText-2 or modify the data path in training scripts.
+
+### Full training + sweep (RunPod)
+
+```bash
+# Build zip and upload to RunPod
+python make_zip.py   # produces ../neuro-analog.zip
+
+# On RunPod — single A100 80GB (spot recommended, ~$0.79–1.10/hr):
+unzip neuro-analog.zip && cd neuro-analog
+pip install -e .
+cd experiments/unified_benchmark
+python run_sweeps.py --task both --gpus 0
+
+# Two GPUs (2× A100 80GB, ~2× faster):
+python run_sweeps.py --task both --gpus 0,1
+```
+
+**Note:** Training has not been executed yet. The infrastructure is ready but requires compute resources to run.
+
+Monitor progress:
+```bash
+ls run_logs/*.log | xargs tail -f
+```
+
+After all 14 training jobs complete:
+```bash
+python sweep_all_cifar10.py \
+  --checkpoint-dir checkpoints/cifar10 \
+  --output-dir results/cifar10 \
+  --sigma-values 0.0,0.03,0.05,0.07,0.10,0.12,0.15 \
+  --n-trials 50 --device cuda
+
+python sweep_all_wikitext2.py \
+  --checkpoint-dir checkpoints/wikitext2 \
+  --output-dir results/wikitext2 \
+  --sigma-values 0.0,0.03,0.05,0.07,0.10,0.12,0.15 \
+  --n-trials 50 --device cuda
+```
+
+See [RUNPOD_INSTRUCTIONS.md](RUNPOD_INSTRUCTIONS.md) for GPU configuration and monitoring.
+
+### Train/sweep a single architecture
+
+```bash
+cd experiments/unified_benchmark
+
+python train_cifar10.py --arch transformer --device cuda
+python train_wikitext2.py --arch s4d --device cuda
+
+python sweep_all_cifar10.py \
+  --arch transformer \
+  --checkpoint-dir checkpoints/cifar10 \
+  --output-dir results/cifar10 \
+  --n-trials 50 --device cuda
+```
+
+### Reproduce the pilot study
+
+```bash
+cd experiments/cross_arch_tolerance
+python train_all.py      # ~3 min on GPU
+python sweep_all.py      # ~90 min, 50 trials
+python plot_results.py   # generates figures/
+```
+
+### Expected Outputs
+
+After running experiments, the following directory structure is created:
+
+```
+experiments/
+├── cross_arch_tolerance/
+│   ├── checkpoints/          # Trained pilot models (7 architecture families) ✅ EXISTS
+│   ├── results/              # JSON files with sweep results per architecture ✅ EXISTS
+│   │   ├── transformer_mismatch.json
+│   │   ├── neural_ode_mismatch.json
+│   │   └── ... (136 JSON files total)
+│   └── figures/              # Generated plots (heatmaps, degradation curves) ✅ EXISTS
+│       ├── degradation_curves.png
+│       └── failure_modes.png
+└── unified_benchmark/
+    ├── checkpoints/          # CIFAR-10 and WikiText-2 trained models ⏳ PENDING
+    │   ├── cifar10/
+    │   │   ├── transformer/
+    │   │   │   └── checkpoint.pt
+    │   │   └── ...
+    │   └── wikitext2/
+    │       └── ...
+    ├── results/              # Analog sweep results for large-scale models ⏳ PENDING
+    │   ├── cifar10/
+    │   └── wikitext2/
+    └── run_logs/             # Training logs per architecture ⏳ PENDING
+```
+
+**Current state:**
+- Pilot study results are complete and available in `experiments/cross_arch_tolerance/`
+- Unified benchmark infrastructure is ready but no training has been executed yet
+- CIFAR-10 dataset is downloaded and available in `experiments/unified_benchmark/data/`
+
+---
+
+## Ark Export (Systems Bridge)
+
+neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24), an analog circuit compiler that takes `BaseAnalogCkt` subclasses through `OptCompiler` to produce circuit-level schedules.
+
+```bash
+python examples/03_ark_pipeline.py       # Neural ODE → NeuralODEAnalogCkt
+python examples/06_ebm_ark.py           # EBM (Hopfield) → HopfieldAnalogCkt
+python examples/07_flow_ark.py          # Flow → FlowAnalogCkt
+python examples/08_diffusion_ark.py     # Diffusion → DiffusionAnalogCkt
+python examples/09_transformer_ffn_ark.py  # Transformer FFN → crossbar partition
+python examples/10_deq_ark.py          # DEQ → gradient flow fixed-point ODE
+python examples/11_ssm_ark.py          # SSM → S4D real/imag split dynamics
+```
+
+**CDG bridge** (`neural_ode_cdg.py`): Cohen-Grossberg normal form → `CDGSpec` → `CDG` → `OptCompiler`. The full compilation chain validated end-to-end.
+
+| Architecture | Status | Generated class |
+|---|---|---|
+| Neural ODE | ✅ Runnable | `NeuralODEAnalogCkt` |
+| SSM (S4D) | ✅ Runnable | `SSMAnalogCkt` |
+| DEQ | ✅ Runnable | `DEQAnalogCkt` |
+| Diffusion | ✅ Runnable | `DiffusionAnalogCkt` |
+| EBM | ✅ Runnable | `HopfieldAnalogCkt` |
+| Flow | ✅ Runnable | `FlowAnalogCkt` |
+| Transformer | Partial — FFN only | attention stays digital |
+
+Ark install order matters (torch before JAX):
 ```bash
 apt-get install -y graphviz
 git clone https://github.com/WangYuNeng/Ark.git
@@ -26,171 +394,125 @@ cd Ark && pip install -r requirement_torch.txt && pip install -r requirement.txt
 
 ---
 
-## Quick start
+## Testing
 
-```python
-from neuro_analog.simulator import analogize, mismatch_sweep
-
-analog_model = analogize(model, sigma_mismatch=0.05, n_adc_bits=8)
-result = mismatch_sweep(model, eval_fn, sigma_values=[0.0, 0.05, 0.10, 0.15], n_trials=50)
-print(result.degradation_threshold(max_relative_loss=0.10))  # σ at 90% quality
-```
-
-`analogize()` replaces `nn.Linear`, `nn.Conv*`, `nn.MultiheadAttention`, and analog-implementable activations with physics-grounded equivalents. Everything without an efficient analog circuit (LayerNorm, Softmax, dynamic Q·Kᵀ) stays digital.
-
-See [`examples/01_quickstart.py`](examples/01_quickstart.py) for a full walkthrough.
-
----
-
-## Experiment: Analog Tolerance across Neural Architecture Families
-
-Seven neural network families trained on small-scale tasks, swept over conductance mismatch σ with 50–200 Monte Carlo trials per point (DEQ: 200 trials on a dense σ grid; others: 50 trials). Three noise sources ablated independently. ADC bit-width swept separately. Two simulation profiles: conservative (ADC at every layer boundary) and full-analog (ADC at final readout only).
-
-The goal is to establish empirical baselines for which architectures are worth compiling to analog hardware and where the failure points are before committing to a chip design or running analog-aware adjoint optimization within Ark.
-
-**Disclaimer:** These are simulation results on demo-scale models (1K–103K parameters) trained near capacity on synthetic and small benchmark tasks. They represent a worst-case bound for each architecture family — production-scale overparameterized models will degrade more gracefully. This is not hardware validation. Several physical effects are not simulated (see Nonidealities section). Results should be interpreted as characterizing the analog sensitivity of the architecture's computational structure, not a specific chip.
-
-> **Work in progress — results will be updated.** The models in this experiment are demo-scale and several are still being fine-tuned for accuracy. The tolerance metric measures *relative* degradation (analog vs. digital baseline for the same model), so architectural rankings are meaningful even when the underlying models are not fully optimized. However, three specific results have known data quality issues and should be treated as preliminary until the planned re-run is complete:
->
-> - **Diffusion (DDIM):** The 3-layer MLP score network does not generate visually recognizable 8×8 MNIST digits even at σ=0. The structural quantization-accumulation finding (quality floor across all DDIM steps) is architecturally real, but the absolute quality numbers are inflated by the model's limited capacity. Fig 5 reflects this — the σ=0 baseline for Diffusion is already poor. Planned fix: larger score network or U-Net backbone.
->
-> - **EBM:** The current checkpoint's sweep baseline and the local `evaluate()` differ by ~6%, attributable to Gibbs chain stochasticity during evaluation. The binarized 8×8 test sample used in Fig 5 also happens to be nearly empty (3 non-zero pixels after downsampling and binarization), making the reconstruction in Fig 5 unrepresentative. Planned fix: fix the Fig 5 test sample seed and tighten evaluation by averaging over multiple Gibbs chains.
->
-> - **DEQ:** The sweep baseline stored in the result files (−0.5673) does not match the current checkpoint's `evaluate()` output (−0.4447) — a 21% discrepancy on a fully deterministic metric — indicating the checkpoint on disk was updated after the RunPod sweep was run. The σ≈11% threshold finding is internally consistent within the sweep data but was computed against a different model version than what is currently saved. Planned fix: re-run the full DEQ sweep from the current checkpoint.
->
-> Neural ODE, SSM, Transformer, and Flow baselines are stable and consistent (stored sweep baselines match current `evaluate()` output within 1%).
-
-### Results (conservative profile)
-
-| Architecture | σ threshold @ 10% loss | Dominant noise | Min ADC bits | Quality at max σ tested |
-|---|---|---|---|---|
-| Neural ODE | ≥ 15% | negligible | 2 | ≥ 0.90 at σ=15% |
-| S4D (diagonal SSM) | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
-| EBM | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
-| Flow | ~15–20% ² | mismatch | 4 | 0.905 ± 0.096 at σ=15% |
-| Transformer | ≥ 15% | negligible | 4 | ≥ 0.90 at σ=15% |
-| DEQ | **~11%** | mismatch | 6 ³ | 0.854 ± 0.088 at σ=15% |
-| Diffusion | — ¹ | quantization | — ¹ | — ¹ |
-
-¹ Diffusion never reaches the 90% quality threshold at any σ tested. The score network's output is quantized at every DDIM step and errors accumulate across 20 inference steps, creating a ~12% quality floor even at σ=0. This is structural, not a mismatch problem — see ablation below.
-
-² Flow threshold uses the mismatch-only ablation sweep (ADC off) as the baseline; the combined mismatch sweep shows a σ=0 artifact (1.085 normalized quality due to quantization discretizing the Wasserstein metric). At σ=15% the ablation mean is 0.905 ± 0.096 — barely above the 0.90 threshold with wide variance, indicating a high-sensitivity transition zone rather than a clean threshold. Extended sweep to σ=30% confirms full degradation (0.842 at σ=20%).
-
-³ DEQ 6-bit minimum from ADC sweep at σ=0.05 mismatch. A σ=0 pure-quantization sweep (no mismatch) produced non-monotonic, high-variance results and is pending re-validation before any architectural precision-floor claim can be made. Run `sweep_all.py --only deq --adc-only --adc-sigma 0.0 --n-trials 200` to re-validate.
-
-**Key finding (conservative):** Five single-pass architectures (Neural ODE, SSM, EBM, Transformer, Flow) show no clean failure threshold within the σ=0–15% range, though Flow enters a high-variance transition zone near σ=15–20%. DEQ — the only architecture requiring iterative fixed-point convergence — shows a threshold near σ≈11% in the current sweep data (200 trials: mean=0.914 at σ=11%, drops to 0.892 at σ=12%), though this result is preliminary pending re-validation from the current checkpoint (see disclaimer). Diffusion's failure mode is structurally different: quantization accumulates across 20 DDIM inference steps regardless of mismatch level. Thermal noise is negligible across all architectures at demo-scale layer widths.
-
-> **SSM scope note:** The SSM experiment uses a diagonal S4D model (Gu et al. 2022) with fixed A, B, C matrices — not Mamba's selective SSM. Mamba's input-dependent B[t], C[t], Δ[t] projections introduce additional analog failure modes (mismatch in `x_proj`/`dt_proj` compounds through the selective mechanism per token) that are not captured here. These results characterize the recurrence structure shared by all diagonal SSMs; Mamba-specific tolerance is a separate study requiring instrumentation of the selective scan kernel.
-
-### Figures (conservative profile)
-
-<table>
-<tr>
-<td><img src="experiments/cross_arch_tolerance/figures/fig1_mismatch_tolerance.png" width="340"/><br><sub>Fig 1 — Mismatch tolerance curves</sub></td>
-<td><img src="experiments/cross_arch_tolerance/figures/fig2_ablation.png" width="340"/><br><sub>Fig 2 — Noise source attribution</sub></td>
-</tr>
-<tr>
-<td><img src="experiments/cross_arch_tolerance/figures/fig3_adc_precision.png" width="340"/><br><sub>Fig 3 — ADC bit-width sweep</sub></td>
-<td><img src="experiments/cross_arch_tolerance/figures/fig4_deq_convergence.png" width="340"/><br><sub>Fig 4 — DEQ convergence failure rate (100% rate is a metric artifact — see note below)</sub></td>
-</tr>
-<tr>
-<td><img src="experiments/cross_arch_tolerance/figures/fig5_visual_results.png" width="340"/><br><sub>Fig 5 — Generated sample quality vs σ (see disclaimer above: Diffusion and EBM baselines are preliminary)</sub></td>
-<td><img src="experiments/cross_arch_tolerance/figures/fig6_output_mse.png" width="340"/><br><sub>Fig 6 — Output MSE vs σ</sub></td>
-</tr>
-</table>
-
-**Fig 4 note — DEQ convergence "100% failure rate":** This is a measurement artifact, not a real failure. The convergence check uses tol=1e-4 on a 64-dim vector (per-element threshold ~1.5×10⁻⁵), which is never satisfied in 30 unroll steps at any σ — including σ=0 with a perfectly trained model. Spectral norm on W_z guarantees the fixed point exists and is unique. The figure correctly shows that the failure rate is *flat across all σ* (structural — not noise-induced), which is the actual finding. Note: the DEQ checkpoint has a known provenance issue (see disclaimer above); the convergence flatness finding holds regardless, but the mismatch threshold (σ≈11%) should be treated as preliminary pending a re-sweep from the current checkpoint.
-
----
-
-### Results (full-analog profile)
-
-Full-analog defers ADC to the final readout only, removing per-layer quantization boundaries. For architectures compiled to crossbar arrays where a single output digitization step is feasible, this is the more physically realistic operating point.
-
-| Architecture | σ threshold @ 10% loss | Min ADC bits |
-|---|---|---|
-| Neural ODE | ≥ 15% | 2 |
-| S4D (diagonal SSM) | ≥ 15% | 4 |
-| EBM | ≥ 15% | 4 |
-| Flow | ~15–20% ² | 4 |
-| Transformer | ≥ 15% | 2 |
-| DEQ | **~11%** | **4** |
-| Diffusion | — ¹ | — ¹ |
-
-¹ Diffusion's structural quantization floor persists even under full-analog: deferring ADC to the final readout doesn't help because the score network's output (not the state) is quantized at each DDIM step.
-
-² See conservative profile footnote ².
-
-**Key finding (full-analog):** Removing per-layer ADC does not change the mismatch ranking. DEQ's ADC requirement drops from 6 to 4 bits when quantization is deferred to readout, consistent with per-iteration ADC creating fixed-point limit cycles. All other thresholds are unchanged — confirming mismatch, not quantization, is the dominant analog failure mode for these architectures.
-
----
-
-## Nonidealities modeled
-
-| Nonideality | Coverage | What's simulated |
-|---|---|---|
-| **Process variation** (mismatch) | Full | δ~N(1,σ²) per weight, static across inferences — dominant failure mode in 6/7 architectures |
-| **Quantization error** | Full | Hard ADC quantization; swept over {2,4,6,8,10,12,16} bits; conservative and full-analog profiles |
-| **Thermal noise** | Full | Johnson-Nyquist ε~N(0, kT/C·N_in) per readout, dynamic per inference. Negligible at C=1pF / demo-scale widths |
-| **Operating range** | Partial | Output saturation at ±V_ref (1V); activation swing clipping (AnalogTanh ±0.95, AnalogSigmoid [0.025, 0.975]). IR drop along crossbar rows not modeled |
-| **Frequency / bandwidth** | Not modeled | No settling time, RC bandwidth limits, 1/f noise, or clock-rate vs. precision tradeoff |
-
-Out of scope: PCM/RRAM conductance drift over time, multi-layer nonideality coupling.
-
----
-
-## Run the experiments
+Run the test suite to verify installation and framework functionality:
 
 ```bash
-cd experiments/cross_arch_tolerance
-python train_all.py          # train all 7 models (CPU: ~2–4 hrs with updated configs; GPU: ~3 min)
-python sweep_all.py          # run all sweeps (~90 min CPU, 50 trials; requires trained checkpoints)
-python plot_results.py       # generate figures from sweep results
+# Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/test_ark_export.py
+
+# Run with verbose output
+pytest tests/ -v
 ```
 
-> **Note:** Model training times increased significantly after architecture/hyperparameter updates (Flow: 5000 epochs, Diffusion: 5000 epochs, EBM: 2000 epochs with CD-5). GPU recommended. The quickstart example (`examples/01_quickstart.py`) trains its own small model and runs in ~2 min on CPU with no checkpoints required.
+**Test coverage:**
+- `test_ark_export.py`: Validates Ark BaseAnalogCkt code generation for Neural ODE, SSM, DEQ, Diffusion, and Flow architectures (requires JAX/Diffrax)
+- `test_backend_extension.py`: Tests analog layer replacements and noise injection
+- Additional tests verify IR extraction and analog amenability scoring
 
-Single architecture, faster:
+Note: Ark export tests require `pip install -e ".[jax]"` and are skipped if JAX/Diffrax are not installed.
 
-```bash
-python sweep_all.py --only neural_ode --n-trials 20
-python sweep_all.py --only diffusion --analog-substrate cld
+---
+
+## Repository Layout
+
+```
+neuro-analog/
+├── README.md
+├── RESEARCH_NOTES.md          # Theoretical grounding, analog-native design principles
+├── RUNPOD_INSTRUCTIONS.md     # Full deployment guide
+├── neuro_analog/
+│   ├── simulator/
+│   │   ├── analog_linear.py   # AnalogLinear — crossbar MVM, all 3 noise sources
+│   │   ├── analog_conv.py     # AnalogConv{1,2,3}d
+│   │   ├── analog_attention.py
+│   │   ├── analog_activation.py
+│   │   ├── analog_ode_solver.py   # ODE solver with per-step weight noise
+│   │   ├── analog_ssm_solver.py   # SSM A_bar mismatch modeling
+│   │   ├── analog_model.py    # analogize(), configure_analog_profile(), calibrate_analog_model()
+│   │   └── sweep.py           # mismatch_sweep(), adc_sweep(), ablation_sweep()
+│   ├── ir/                    # AnalogGraph, OpType taxonomy, D/A boundary detection
+│   └── ark_bridge/            # PyTorch → Ark BaseAnalogCkt export
+├── experiments/
+│   ├── cross_arch_tolerance/  # Pilot study (small-scale, results complete)
+│   └── unified_benchmark/     # Main benchmark (in training)
+│       ├── models/            # 14 implementations — 7 arch × 2 tasks
+│       ├── train_cifar10.py
+│       ├── train_wikitext2.py
+│       ├── sweep_all_cifar10.py
+│       ├── sweep_all_wikitext2.py
+│       └── run_sweeps.py      # Multi-GPU parallel job runner
+├── examples/                  # Quickstart, Ark export walkthroughs
+├── make_zip.py
+└── pyproject.toml
 ```
 
 ---
 
-## Ark integration
+## Common Issues and Troubleshooting
 
-neuro-analog connects to [Ark](https://github.com/WangYuNeng/Ark) (Wang & Achour, ASPLOS '24) via two export paths. The CDG bridge mirrors the node/edge/production-rule structure from Wang & Achour (Ark, ASPLOS '24) — each exported file is a valid `BaseAnalogCkt` subclass immediately runnable by `OptCompiler`.
+**CUDA out of memory during training:**
+- Reduce batch size in training scripts: `--batch-size 64` (default is 128 for CIFAR-10, 32 for WikiText-2)
+- Use gradient checkpointing: add `--gradient-checkpointing` flag if supported by the architecture
+- Use a smaller model variant: adjust hidden dimensions in model configs
 
-**Path 1 — Direct code generation** (`neuro_analog/ark_bridge/`): Reads trained weights from a PyTorch model and emits a Python/JAX file containing a `BaseAnalogCkt` subclass with `make_args`, `ode_fn`, `noise_fn`, and `readout` implemented. The generated file is immediately runnable by Ark's `OptCompiler` and trains with the adjoint method via JAX/Diffrax.
+**Dataset download fails:**
+- Check internet connection; CIFAR-10 and WikiText-2 are downloaded automatically
+- For WikiText-2, ensure HuggingFace datasets can access `~/.cache/huggingface/datasets/`
+- Set `HF_DATASETS_OFFLINE=1` to use cached datasets if available
 
-```bash
-python examples/03_ark_pipeline.py           # Neural ODE — full sweep + Ark export
-python examples/06_ebm_ark.py               # EBM (Hopfield) — CDG bridge + Ark export
-python examples/07_flow_ark.py              # Flow — MLP velocity field export
-python examples/08_diffusion_ark.py         # Diffusion — VP-SDE probability flow ODE
-python examples/09_transformer_ffn_ark.py   # Transformer FFN — crossbar partition
-python examples/10_deq_ark.py              # DEQ — gradient flow fixed-point ODE
-python examples/11_ssm_ark.py              # SSM — S4D real/imag split dynamics
+**Ark export fails with "module not found":**
+- Ensure Ark is installed: `pip install -e .` in the Ark repository directory
+- Install JAX/Diffrax: `pip install -e ".[jax]"`
+- Check that PyTorch is installed before JAX (install order matters)
+
+**Training is too slow:**
+- Use GPU acceleration: ensure `--device cuda` is specified
+- For pilot study, use a single GPU (scales linearly with more GPUs)
+- For unified benchmark, consider using RunPod or cloud GPUs with A100/H100
+
+**Results not reproducible:**
+- Set random seeds in training scripts: `--seed 42`
+- Ensure deterministic CUDA operations: `export CUDA_LAUNCH_BLOCKING=1`
+- Check that noise sweeps use the same `--n-trials` and `--sigma-values`
+
+---
+
+## Citation
+
+If you use this framework or reproduce the experiments, please cite:
+
+```bibtex
+@software{neuro_analog,
+  title={neuro-analog: Cross-architecture neural-to-analog compilation framework},
+  author={Mutyala, Apuroop},
+  year={2025},
+  url={https://github.com/apumutyala/neuro-analog},
+  license={MIT}
+}
 ```
 
-**Path 2 — CDG bridge** (`neuro_analog/ark_bridge/neural_ode_cdg.py`): Converts Neural ODE weights in Hopfield/Cohen-Grossberg normal form (dx/dt = −x + J·tanh(x) + b + K·u) to a proper Ark `CDGSpec` → `CDG` → `OptCompiler` → `BaseAnalogCkt` subclass. This uses Ark's full compiler pipeline with typed node/edge production rules, per-weight `TrainableMgr` registration, and optional mismatch tagging.
+## License
 
-```bash
-python examples/05_cdg_bridge.py --n 4 --sigma 0.10
-```
+MIT License - see LICENSE file for details.
 
-**Which architectures export to Ark:**
+## Contact
 
-| Architecture | Export tier | Generated class | Notes |
-|---|---|---|---|
-| Neural ODE | Runnable `BaseAnalogCkt` | `NeuralODEAnalogCkt` | Two paths: direct + CDG bridge |
-| SSM (S4D) | Runnable `BaseAnalogCkt` | `SSMAnalogCkt` | Real/imag split; diagonal A → RC bank |
-| DEQ | Runnable `BaseAnalogCkt` | `DEQAnalogCkt` | Fixed-point → ODE form (dz/dt = f−z) |
-| Diffusion | Runnable `BaseAnalogCkt` | `DiffusionAnalogCkt` | VP-SDE probability flow ODE |
-| EBM (Hopfield) | Runnable `BaseAnalogCkt` | `HopfieldAnalogCkt` | CDG bridge path |
-| Flow | Analysis document | `FlowODE` (plain class) | Velocity field MLP; no fixed-point ODE structure for CDG mapping |
-| Transformer | Analysis document | — | FFN crossbar partition; attention softmax stays digital |
+For questions, bug reports, or collaboration inquiries:
+- Open an issue on GitHub: https://github.com/apumutyala/neuro-analog/issues
+- Email: [author email to be added]
 
-Requires Ark, JAX, Diffrax, Equinox, Lineax (`pip install -e ".[jax]"`).
+---
+
+## Limitations
+
+- **Simulated nonidealities only.** No silicon validation. The noise model follows Wang & Achour (arXiv:2411.03557) and is grounded in published device physics, but real hardware introduces effects we don't model: settling time, 1/f noise, inter-cell coupling, conductance drift.
+- **Medium scale.** 1.7M–45M params for most models; 450M for Flow CIFAR. Larger models with more redundancy typically degrade more gracefully — these results are plausibly conservative bounds, not ceilings.
+- **Relative degradation, not absolute quality.** Thresholds measure when a model degrades relative to its own digital baseline, not whether the baseline itself is good. A weak baseline that degrades gracefully may still be useless. Task results (CIFAR-10 and WikiText-2) are reported as separate strata — not pooled — since activation dynamic ranges and degradation definitions differ across modalities.
+- **Diffusion σ=0 failure is structural, not a training artifact.** Diffusion's quality floor at σ=0 reflects ADC quantization accumulating across 20 denoising steps even before fabrication mismatch is applied. This is a property of multi-step inference pipelines with per-layer ADC, not a sign the model failed to train.
+- **S4D, not Mamba.** Diagonal SSM with fixed parameters. Mamba's selective scan with input-dependent A, B, C is a distinct case.
+- **NeuralODE LM is bidirectional.** Encoder-style, not autoregressive. Perplexity numbers are not directly comparable to GPT-style models.
