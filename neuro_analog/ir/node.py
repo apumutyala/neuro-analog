@@ -41,6 +41,7 @@ _DEFAULT_DOMAIN: dict[OpType, Domain] = {
     OpType.LAYER_NORM: Domain.DIGITAL,
     OpType.GROUP_NORM: Domain.DIGITAL,
     OpType.RMS_NORM: Domain.DIGITAL,
+    OpType.BATCH_NORM: Domain.DIGITAL,
     OpType.SOFTPLUS: Domain.DIGITAL,
     OpType.SILU: Domain.DIGITAL,
     OpType.GELU: Domain.DIGITAL,
@@ -48,6 +49,8 @@ _DEFAULT_DOMAIN: dict[OpType, Domain] = {
     OpType.DYNAMIC_MATMUL: Domain.DIGITAL,
     OpType.RESHAPE: Domain.DIGITAL,
     OpType.EMBEDDING: Domain.DIGITAL,
+    OpType.MAX_POOL: Domain.DIGITAL,
+    OpType.DROPOUT: Domain.DIGITAL,
     
     # Hybrid
     OpType.KERNEL_ATTENTION: Domain.HYBRID,
@@ -277,5 +280,63 @@ def make_noise_node(
         flops=dim,
         metadata={"noise_type": noise_type},
         noise=noise or NoiseSpec(kind="shot", sigma=1e-3),
+        **kwargs,
+    )
+
+
+def make_batch_norm_node(
+    name: str,
+    num_features: int,
+    **kwargs,
+) -> AnalogNode:
+    """Create a batch normalization node."""
+    return AnalogNode(
+        name=name,
+        op_type=OpType.BATCH_NORM,
+        domain=Domain.DIGITAL,
+        input_shape=(num_features,),
+        output_shape=(num_features,),
+        flops=5 * num_features,  # mean + var + sqrt + scale + shift
+        param_count=2 * num_features,  # gamma + beta
+        **kwargs,
+    )
+
+
+def make_max_pool_node(
+    name: str,
+    kernel_size: int,
+    input_shape: tuple[int, ...],
+    **kwargs,
+) -> AnalogNode:
+    """Create a max pooling node."""
+    return AnalogNode(
+        name=name,
+        op_type=OpType.MAX_POOL,
+        domain=Domain.DIGITAL,
+        input_shape=input_shape,
+        output_shape=input_shape,  # Simplified: same shape, actual shape depends on stride/padding
+        flops=input_shape[0] * input_shape[1] * input_shape[2],  # ~1 compare per element
+        param_count=0,
+        metadata={"kernel_size": kernel_size},
+        **kwargs,
+    )
+
+
+def make_dropout_node(
+    name: str,
+    dim: int,
+    dropout_rate: float = 0.1,
+    **kwargs,
+) -> AnalogNode:
+    """Create a dropout node (training-only, zero-compute at inference)."""
+    return AnalogNode(
+        name=name,
+        op_type=OpType.DROPOUT,
+        domain=Domain.DIGITAL,
+        input_shape=(dim,),
+        output_shape=(dim,),
+        flops=0,  # Zero-compute at inference (training-only stochastic masking)
+        param_count=0,
+        metadata={"dropout_rate": dropout_rate},
         **kwargs,
     )

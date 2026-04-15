@@ -76,6 +76,7 @@ class OpType(Enum):
     LAYER_NORM = auto()         # mean + variance + sqrt + division
     GROUP_NORM = auto()         # per-group normalization
     RMS_NORM = auto()           # root mean square normalization
+    BATCH_NORM = auto()         # batch normalization (mean + var + scale + shift)
     SOFTPLUS = auto()           # log(1 + exp(x))
     SILU = auto()               # x · σ(x) — SiLU/Swish
     GELU = auto()               # x · Φ(x)
@@ -83,6 +84,8 @@ class OpType(Enum):
     DYNAMIC_MATMUL = auto()     # Data-dependent matrix multiply (Q·K^T, attn·V)
     RESHAPE = auto()            # Tensor reshape/permute (zero-compute, routing)
     EMBEDDING = auto()          # Token/position embedding lookup
+    MAX_POOL = auto()           # Max pooling (spatial downsampling)
+    DROPOUT = auto()            # Stochastic dropout (training-only, zero-compute at inference)
     
     # ── Hybrid operations ────────────────────────────────────────────
     KERNEL_ATTENTION = auto()   # FAVOR+ kernel approximation of softmax attention
