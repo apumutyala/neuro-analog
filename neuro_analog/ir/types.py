@@ -250,7 +250,15 @@ class DynamicsProfile:
 
 @dataclass
 class AnalogAmenabilityProfile:
-    """Complete analog amenability assessment for one architecture instance."""
+    """Complete analog amenability assessment for one architecture instance.
+
+    FLOP estimation notes:
+    - FLOPs are analytical estimates based on tensor shapes, not runtime measurements
+    - Per-sample estimates (batch_size=1); multiply by actual batch_size for total inference FLOPs
+    - Attention FLOPs assume full sequence length; causal attention reduces by ~50%
+    - Convolution FLOPs assume standard padding/stride; actual may vary
+    - Margin of error: ±10% for standard architectures, higher for dynamic shapes
+    """
     architecture: ArchitectureFamily
     model_name: str
     model_params: int  # Total parameter count
@@ -360,3 +368,53 @@ class AnalogAmenabilityProfile:
             + weights.get("noise", 0.0) * self.noise_score
             + weights["analog_frac"] * self.analog_flop_fraction
         )
+
+    def to_dict(self, include_flop_breakdown: bool = True) -> dict:
+        """Serialize profile to dict for JSON logging.
+
+        Args:
+            include_flop_breakdown: If True, include detailed FLOP breakdown by domain.
+        """
+        data = {
+            "architecture": self.architecture.value,
+            "model_name": self.model_name,
+            "model_params": self.model_params,
+            "analog_flop_fraction": self.analog_flop_fraction,
+            "digital_flop_fraction": self.digital_flop_fraction,
+            "hybrid_flop_fraction": self.hybrid_flop_fraction,
+            "da_boundary_count": self.da_boundary_count,
+            "da_boundary_count_per_step": self.da_boundary_count_per_step,
+            "crossbar_tiles_needed": self.crossbar_tiles_needed,
+            "total_analog_area_mm2": self.total_analog_area_mm2,
+            "total_digital_area_mm2": self.total_digital_area_mm2,
+            "analog_power_mW": self.analog_power_mW,
+            "digital_power_mW": self.digital_power_mW,
+            "converter_power_mW": self.converter_power_mW,
+            "min_weight_precision_bits": self.min_weight_precision_bits,
+            "min_activation_precision_bits": self.min_activation_precision_bits,
+            "dynamics_score": self.dynamics_score,
+            "precision_score": self.precision_score,
+            "boundary_score": self.boundary_score,
+            "noise_score": self.noise_score,
+            "overall_score": self.overall_score,
+            "dynamics": {
+                "has_dynamics": self.dynamics.has_dynamics,
+                "dynamics_type": self.dynamics.dynamics_type,
+                "time_constant_spread": self.dynamics.time_constant_spread,
+                "state_dimension": self.dynamics.state_dimension,
+                "beta_dynamic_range": self.dynamics.beta_dynamic_range,
+                "num_diffusion_steps": self.dynamics.num_diffusion_steps,
+                "is_stochastic": self.dynamics.is_stochastic,
+                "lipschitz_constant": self.dynamics.lipschitz_constant,
+                "flow_straightness": self.dynamics.flow_straightness,
+                "num_function_evaluations": self.dynamics.num_function_evaluations,
+                "stiffness_ratio": self.dynamics.stiffness_ratio,
+            },
+        }
+        if include_flop_breakdown:
+            data["flop_breakdown"] = {
+                "analog_flops": int(self.analog_flop_fraction * self.model_params * 2),  # Approximate
+                "digital_flops": int(self.digital_flop_fraction * self.model_params * 2),
+                "hybrid_flops": int(self.hybrid_flop_fraction * self.model_params * 2),
+            }
+        return data

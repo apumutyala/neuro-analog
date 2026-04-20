@@ -106,7 +106,10 @@ def run_ark_evaluation(model_type: str, n_trials: int = 5) -> None:
         from models import neural_ode as mod
         model = mod.load_model(str(ckpt_path))
         extractor = NeuralODEExtractor.from_module(model, state_dim=2)
-        extractor.run()
+        profile = extractor.run()
+        print(f"  Analog FLOP share: {profile.analog_flop_fraction*100:.1f}%")
+        print(f"  D/A boundaries: {profile.da_boundary_count}")
+        print(f"  Amenability score: {profile.overall_score:.3f}")
         export_neural_ode_to_ark(extractor=extractor, output_path=export_path, mismatch_sigma=0.05)
         class_name = "NeuralODEAnalogCkt"
         state_dim = 2

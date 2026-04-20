@@ -97,8 +97,9 @@ class TransformerExtractor(BaseExtractor):
         device: str = "cpu",
         use_favor_plus: bool = False,
         num_favor_features: int = 256,
+        seq_len: int | None = None,
     ):
-        super().__init__(model_name, device)
+        super().__init__(model_name, device, seq_len=seq_len)
         self.use_favor_plus = use_favor_plus
         self.num_favor_features = num_favor_features
 
@@ -132,12 +133,32 @@ class TransformerExtractor(BaseExtractor):
         return 768
 
     def _get_num_heads(self) -> int:
+        """Infer number of attention heads from config."""
         if hasattr(self.model, "config"):
             cfg = self.model.config
             for attr in ("num_attention_heads", "n_head", "num_heads"):
                 if hasattr(cfg, attr):
                     return getattr(cfg, attr)
-        return 12
+        return 8
+
+    def _get_seq_len(self) -> int:
+        """Get effective sequence length for FLOP calculations.
+        
+        Uses self.seq_len if provided, otherwise infers from model type:
+        - Vision models (ViT, DiT): default to 1024 (32x32 patches for CIFAR-10)
+        - Language models: default to 256 (WikiText-2 standard)
+        - Fallback: 512 (common default)
+        """
+        if self.seq_len is not None:
+            return self.seq_len
+        
+        # Try to infer from model name/config
+        model_name_lower = self.model_name.lower()
+        if any(x in model_name_lower for x in ["vit", "dit", "vision", "image"]):
+            return 1024  # CIFAR-10: 32x32 patches
+        elif any(x in model_name_lower for x in ["gpt", "bert", "llama", "mistral"]):
+            return 256  # WikiText-2 standard
+        return 512  # Common default
 
     def _get_num_layers(self) -> int:
         if hasattr(self.model, "config"):
@@ -150,6 +171,7 @@ class TransformerExtractor(BaseExtractor):
     def _add_attention_block(self, graph: AnalogGraph, prefix: str, dim: int, heads: int):
         """Add Q/K/V, attention score, softmax/FAVOR+, and output projection nodes."""
         head_dim = dim // heads
+        seq_len = self._get_seq_len()
 
         # Q, K, V projections — ANALOG: static weight MVMs
         graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim))
@@ -189,12 +211,15 @@ class TransformerExtractor(BaseExtractor):
             ))
         else:
             # Standard softmax attention — Q·K^T and Attn·V are DIGITAL
+            # FLOPs: seq_len² * heads * head_dim for Q·K^T and Attn·V
+            # FLOPs: seq_len² * heads for softmax (exp + sum + normalize)
+            seq_len_sq = seq_len * seq_len
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_score",
                 op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-                flops=2 * heads * head_dim,
+                flops=seq_len_sq * heads * head_dim,
                 metadata={"description": "Q·K^T — data-dependent, can't be static crossbar"},
             ))
             graph.add_node(AnalogNode(
@@ -202,14 +227,14 @@ class TransformerExtractor(BaseExtractor):
                 op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-                flops=3 * heads,
+                flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_value",
                 op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-                flops=2 * heads * head_dim,
+                flops=seq_len_sq * heads * head_dim,
                 metadata={"description": "Attn·V — data-dependent"},
             ))
 
@@ -341,6 +366,8 @@ class TransformerExtractor(BaseExtractor):
         # Build graph directly without a loaded model
         total_params = n_layers * (12 * dim * dim)  # Rough estimate
         ffn_dim = 4 * dim
+        seq_len = ext._get_seq_len()
+        seq_len_sq = seq_len * seq_len
 
         graph = AnalogGraph(
             name=model_name,
@@ -363,20 +390,21 @@ class TransformerExtractor(BaseExtractor):
                     input_shape=(dim,), output_shape=(dim,), flops=2 * dim * 256,
                 ))
             else:
+                head_dim = dim // heads
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
-                    domain=Domain.DIGITAL, input_shape=(heads, -1, dim // heads),
-                    output_shape=(heads, -1, -1), flops=2 * heads * dim // heads,
+                    domain=Domain.DIGITAL, input_shape=(heads, -1, head_dim),
+                    output_shape=(heads, -1, -1), flops=seq_len_sq * heads * head_dim,
                 ))
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
-                    domain=Domain.DIGITAL, input_shape=(heads,), output_shape=(heads,),
-                    flops=3 * heads,
+                    domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
+                    flops=seq_len_sq * heads,
                 ))
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
                     domain=Domain.DIGITAL, input_shape=(heads, -1, -1),
-                    output_shape=(heads, -1, dim // heads), flops=2 * heads * dim // heads,
+                    output_shape=(heads, -1, head_dim), flops=seq_len_sq * heads * head_dim,
                 ))
 
             graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
@@ -426,7 +454,7 @@ class TransformerFFNExtractor:
             trans_module.train_model(self.model, str(self.checkpoint_path))
         self._trans_module = trans_module
 
-    def run(self):
+    def run(self, log_profile_path: str | None = None):
         """Return a simple amenability profile."""
         assert self.model is not None, "Call load_model() first"
         n_layers = len(self.model.layers)
@@ -455,6 +483,36 @@ class TransformerFFNExtractor:
         p.n_layers = n_layers
         p.dim = dim
         p.ffn_dim = ffn_dim
+
+        # Save profile to JSON
+        if log_profile_path is None:
+            from pathlib import Path
+            import time
+            output_dir = Path("outputs/profiles")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = int(time.time())
+            log_profile_path = str(output_dir / f"transformer_ffn_{timestamp}.json")
+
+        import json
+        profile_dict = {
+            "architecture": "transformer",
+            "model_name": "transformer_ffn",
+            "model_params": total_params,
+            "analog_flop_fraction": p.analog_flop_fraction,
+            "digital_flop_fraction": 1.0 - p.analog_flop_fraction,
+            "hybrid_flop_fraction": 0.0,
+            "da_boundary_count": p.da_boundary_count,
+            "overall_score": p.overall_score,
+            "ffn_params": ffn_params,
+            "attn_params": attn_params,
+            "n_layers": n_layers,
+            "dim": dim,
+            "ffn_dim": ffn_dim,
+        }
+        with open(log_profile_path, "w") as f:
+            json.dump(profile_dict, f, indent=2)
+        print(f"[neuro-analog] Profile saved to: {log_profile_path}")
+
         return p
 
     def export_to_ark(self, output_path, mismatch_sigma: float = 0.05) -> str:

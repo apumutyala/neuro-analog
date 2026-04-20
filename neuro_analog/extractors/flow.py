@@ -43,6 +43,18 @@ class FLUXExtractor(BaseExtractor):
     Supports: FLUX.1-schnell (4 step, Apache 2.0), FLUX.1-dev (28 step)
     """
     
+    def __init__(
+        self,
+        model_name: str,
+        device: str = "cpu",
+        img_size: int = 32,
+        in_channels: int = 3,
+        seq_len: int | None = None,
+    ):
+        super().__init__(model_name, device, seq_len=seq_len)
+        self.img_size = img_size
+        self.in_channels = in_channels
+    
     @property
     def family(self) -> ArchitectureFamily:
         return ArchitectureFamily.FLOW
@@ -127,9 +139,18 @@ class FLUXExtractor(BaseExtractor):
             "note": "Requires GPU inference",
         }
     
+    def _get_seq_len(self) -> int:
+        """Get effective sequence length for FLOP calculations.
+        
+        Uses self.seq_len if provided, otherwise defaults to 1024 (FLUX standard).
+        """
+        if self.seq_len is not None:
+            return self.seq_len
+        return 1024  # FLUX.1 standard sequence length
+
     def build_graph(self) -> AnalogGraph:
         """Build AnalogGraph for FLUX.1 MMDiT architecture.
-        
+
         Structure:
         - 19 double-stream blocks (separate text/image, joint attention)
         - 38 single-stream blocks (standard transformer)
@@ -141,15 +162,17 @@ class FLUXExtractor(BaseExtractor):
             family=ArchitectureFamily.FLOW,
             model_params=total_params,
         )
-        
+
         # Model dimensions (FLUX.1)
         dim = 3072  # Hidden dimension
         heads = 24
         head_dim = 128
         mlp_dim = dim * 4
+        seq_len = self._get_seq_len()
+        seq_len_sq = seq_len * seq_len
         
         # Patch embedding
-        graph.add_node(make_mvm_node("patch_embed", 64, dim))  # 16-ch latent → dim
+        graph.add_node(make_mvm_node("patch_embed", self.in_channels, dim))  # in_channels → dim
         
         # ── Double-stream blocks (×19) ──
         for i in range(19):
@@ -174,19 +197,19 @@ class FLUXExtractor(BaseExtractor):
                 name=f"{prefix}.joint_attn_score", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-                flops=2 * heads * head_dim * 1024,  # Approximate
+                flops=seq_len_sq * heads * head_dim,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.joint_softmax", op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
-                input_shape=(heads,), output_shape=(heads,),
-                flops=3 * heads * 1024,
+                input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
+                flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.joint_attn_value", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-                flops=2 * heads * head_dim * 1024,
+                flops=seq_len_sq * heads * head_dim,
             ))
             
             # Output projections
@@ -218,18 +241,18 @@ class FLUXExtractor(BaseExtractor):
             graph.add_node(make_mvm_node(f"{prefix}.qkv", dim, 3 * dim))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
-                domain=Domain.DIGITAL, input_shape=(heads,), output_shape=(heads,),
-                flops=2 * heads * head_dim * 1024,
+                domain=Domain.DIGITAL, input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
+                flops=seq_len_sq * heads * head_dim,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
-                domain=Domain.DIGITAL, input_shape=(heads,), output_shape=(heads,),
-                flops=3 * heads * 1024,
+                domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
+                flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
-                domain=Domain.DIGITAL, input_shape=(heads,), output_shape=(heads,),
-                flops=2 * heads * head_dim * 1024,
+                domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
+                flops=seq_len_sq * heads * head_dim,
             ))
             graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
             graph.add_node(make_mvm_node(f"{prefix}.mlp1", dim, mlp_dim))
@@ -241,18 +264,21 @@ class FLUXExtractor(BaseExtractor):
             ))
         
         # ── ODE integration step (Euler) ──
+        spatial_flops = self.in_channels * self.img_size * self.img_size
         graph.add_node(AnalogNode(
             name="ode_step.scale", op_type=OpType.GAIN,
             domain=Domain.ANALOG,
-            input_shape=(64, 32, 32), output_shape=(64, 32, 32),
-            flops=64*32*32,
+            input_shape=(self.in_channels, self.img_size, self.img_size),
+            output_shape=(self.in_channels, self.img_size, self.img_size),
+            flops=spatial_flops,
             metadata={"description": "Δt · v_θ via programmable gain amplifier"},
         ))
         graph.add_node(AnalogNode(
             name="ode_step.accumulate", op_type=OpType.ACCUMULATION,
             domain=Domain.ANALOG,
-            input_shape=(64, 32, 32), output_shape=(64, 32, 32),
-            flops=64*32*32,
+            input_shape=(self.in_channels, self.img_size, self.img_size),
+            output_shape=(self.in_channels, self.img_size, self.img_size),
+            flops=spatial_flops,
             metadata={"description": "x_{t+Δt} = x_t + Δt·v_θ via capacitor integration"},
         ))
 

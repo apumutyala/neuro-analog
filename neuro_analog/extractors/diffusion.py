@@ -33,14 +33,19 @@ from .base import BaseExtractor
 
 class StableDiffusionExtractor(BaseExtractor):
     """Extract analog-relevant parameters from Stable Diffusion models.
-    
+
     Supports: SD 1.5, SD 2.1, SDXL, SD3 (via diffusers library)
-    
+
     Usage:
         extractor = StableDiffusionExtractor("runwayml/stable-diffusion-v1-5")
         profile = extractor.run()
     """
-    
+
+    def __init__(self, model_name: str, device: str = "cpu", seq_len: int | None = None, img_size: int = 64, in_channels: int = 4):
+        super().__init__(model_name, device, seq_len=seq_len)
+        self.img_size = img_size
+        self.in_channels = in_channels
+
     @property
     def family(self) -> ArchitectureFamily:
         return ArchitectureFamily.DIFFUSION
@@ -84,9 +89,18 @@ class StableDiffusionExtractor(BaseExtractor):
             is_stochastic=True,  # VP-SDE has noise term; DDIM converts to ODE
         )
     
+    def _get_seq_len(self) -> int:
+        """Get effective sequence length for FLOP calculations.
+
+        Uses self.seq_len if provided, otherwise defaults to 1024 (SD standard).
+        """
+        if self.seq_len is not None:
+            return self.seq_len
+        return 1024  # Stable Diffusion standard sequence length
+
     def extract_noise_schedule_analysis(self) -> dict:
         """Detailed noise schedule analysis for analog hardware requirements.
-        
+
         Returns per-timestep precision requirements:
         - Which timesteps demand highest β(t) precision?
         - Where does SNR transition matter most?
@@ -96,7 +110,7 @@ class StableDiffusionExtractor(BaseExtractor):
         alphas = 1.0 - betas
         alphas_cumprod = np.cumprod(alphas)
         snr = alphas_cumprod / (1.0 - alphas_cumprod + 1e-10)
-        
+
         return {
             "betas": betas,
             "alphas_cumprod": alphas_cumprod,
@@ -111,46 +125,50 @@ class StableDiffusionExtractor(BaseExtractor):
     
     def build_graph(self) -> AnalogGraph:
         """Build AnalogGraph for U-Net score network.
-        
+
         Decomposes the U-Net into:
         - Encoder: [ResBlock, Attention, Downsample] per level
         - Middle: ResBlock + Attention + ResBlock
         - Decoder: [ResBlock, Attention, Upsample] per level
-        
+
         Plus per-step ODE/SDE dynamics update.
         """
         assert self.model is not None, "Call load_model() first"
-        
+
         total_params = sum(p.numel() for p in self.model.parameters())
         graph = AnalogGraph(
             name=self.model_name,
             family=ArchitectureFamily.DIFFUSION,
             model_params=total_params,
         )
-        
+
         # Timestep embedding MLP
         graph.add_node(make_mvm_node("time_embed.linear1", 320, 1280))
         graph.add_node(make_activation_node("time_embed.silu", 1280, "silu"))
         graph.add_node(make_mvm_node("time_embed.linear2", 1280, 1280))
         graph.add_edge("time_embed.linear1", "time_embed.silu")
         graph.add_edge("time_embed.silu", "time_embed.linear2")
-        
+
         # Build encoder, middle, decoder blocks by walking the actual model
-        self._build_unet_graph(graph)
+        seq_len = self._get_seq_len()
+        self._build_unet_graph(graph, seq_len)
         
         # ODE/SDE update step (per denoising iteration)
+        spatial_flops = self.in_channels * self.img_size * self.img_size
         graph.add_node(AnalogNode(
             name="ode_update.scale", op_type=OpType.GAIN,
             domain=Domain.ANALOG,
-            input_shape=(4, 64, 64), output_shape=(4, 64, 64),
-            flops=4*64*64,
+            input_shape=(self.in_channels, self.img_size, self.img_size),
+            output_shape=(self.in_channels, self.img_size, self.img_size),
+            flops=spatial_flops,
             metadata={"description": "√ᾱ scaling via programmable gain amp"},
         ))
         graph.add_node(AnalogNode(
             name="ode_update.accumulate", op_type=OpType.ACCUMULATION,
             domain=Domain.ANALOG,
-            input_shape=(4, 64, 64), output_shape=(4, 64, 64),
-            flops=4*64*64,
+            input_shape=(self.in_channels, self.img_size, self.img_size),
+            output_shape=(self.in_channels, self.img_size, self.img_size),
+            flops=spatial_flops,
             metadata={"description": "x_{t-1} = scaled_x0 + noise_component"},
         ))
         # target_sigma for calibration error metric: √β at median timestep.
@@ -160,58 +178,49 @@ class StableDiffusionExtractor(BaseExtractor):
                  if hasattr(self.scheduler, "betas") else None)
         target_sigma = float(np.sqrt(np.median(betas))) if betas is not None else 0.02
         graph.add_node(make_noise_node(
-            "ode_update.noise", dim=4*64*64, noise_type="gaussian",
+            "ode_update.noise", dim=spatial_flops, noise_type="gaussian",
             noise=None,  # StochasticMapper will set actual sigma
         ))
         graph.get_node("ode_update.noise").metadata["target_sigma"] = target_sigma
         
         return graph
     
-    def _build_unet_graph(self, graph: AnalogGraph):
-        """Walk the U-Net model structure and create nodes for each operation."""
-        # Channel dimensions for SD1.5: [320, 640, 1280, 1280]
-        channels = [320, 640, 1280, 1280]
-        
-        for level, ch in enumerate(channels):
-            ch_in = channels[level - 1] if level > 0 else 320
-            for block in range(2):
-                prefix = f"encoder.level{level}.block{block}"
-                self._add_resblock_nodes(graph, prefix, ch_in if block == 0 else ch, ch)
-            
-            # Attention at 32×32, 16×16, 8×8 (not at 64×64)
+    def _build_unet_graph(self, graph: AnalogGraph, seq_len: int = 1024):
+        """Walk U-Net structure and add nodes for each block."""
+        # Simplified structure based on SD 1.5 U-Net
+        # Encoder: 4 levels, each with 2 ResBlocks, Attention (except level 0), Downsample
+        # Middle: 2 ResBlocks + Attention
+        # Decoder: 4 levels, each with 2 ResBlocks, Attention (except level 0), Upsample
+
+        # Encoder
+        for level in range(4):
+            ch = [320, 640, 1280, 1280][level]
+            self._add_resblock_nodes(graph, f"encoder.level{level}.block0", ch, ch)
+            self._add_resblock_nodes(graph, f"encoder.level{level}.block1", ch, ch)
+
             if level > 0:
                 prefix = f"encoder.level{level}.attention"
-                self._add_attention_nodes(graph, prefix, ch, heads=ch // 64)
-            
+                self._add_attention_nodes(graph, prefix, ch, heads=ch // 64, seq_len=seq_len)
+
             # Downsample (strided conv)
-            if level < len(channels) - 1:
-                graph.add_node(make_mvm_node(
-                    f"encoder.level{level}.downsample", ch, ch,
-                ))
-        
+            if level < 3:
+                graph.add_node(make_mvm_node(f"encoder.level{level}.downsample", ch, ch * 2))
+
         # Middle block
         self._add_resblock_nodes(graph, "middle.block1", 1280, 1280)
-        self._add_attention_nodes(graph, "middle.attention", 1280, heads=20)
+        self._add_attention_nodes(graph, "middle.attention", 1280, heads=20, seq_len=seq_len)
         self._add_resblock_nodes(graph, "middle.block2", 1280, 1280)
-        
-        # Decoder (mirror of encoder with skip connections)
-        for level in reversed(range(len(channels))):
-            ch = channels[level]
-            for block in range(3):  # 3 blocks per level in decoder
-                prefix = f"decoder.level{level}.block{block}"
-                skip_ch = ch  # Skip connection from encoder
-                self._add_resblock_nodes(graph, prefix, ch + skip_ch if block == 0 else ch, ch)
-                
-                # Skip connection (analog current summation)
-                graph.add_node(AnalogNode(
-                    name=f"{prefix}.skip", op_type=OpType.SKIP_CONNECTION,
-                    domain=Domain.ANALOG,
-                    input_shape=(ch,), output_shape=(ch,), flops=ch,
-                ))
-            
+
+        # Decoder
+        for level in range(3, -1, -1):
+            ch = [320, 640, 1280, 1280][level]
+            self._add_resblock_nodes(graph, f"decoder.level{level}.block0", ch, ch)
+            self._add_resblock_nodes(graph, f"decoder.level{level}.block1", ch, ch)
+
+
             if level > 0:
-                self._add_attention_nodes(graph, f"decoder.level{level}.attention", ch, ch // 64)
-        
+                self._add_attention_nodes(graph, f"decoder.level{level}.attention", ch, ch // 64, seq_len=seq_len)
+
         # Final output
         graph.add_node(make_norm_node("final.group_norm", 320, "group_norm"))
         graph.add_node(make_activation_node("final.silu", 320, "silu"))
@@ -231,57 +240,70 @@ class StableDiffusionExtractor(BaseExtractor):
             flops=ch_out,
         ))
     
-    def _add_attention_nodes(self, graph: AnalogGraph, prefix: str, dim: int, heads: int):
+    def _add_attention_nodes(self, graph: AnalogGraph, prefix: str, dim: int, heads: int, seq_len: int = 1024):
         """Add nodes for a self-attention block with analog/digital partition."""
         head_dim = dim // heads
+        seq_len_sq = seq_len * seq_len
         # Q, K, V projections — ANALOG (static weight MVMs)
         graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim))
         graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim))
         graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim))
-        
+
         # Q·K^T — DIGITAL (data-dependent dynamic matmul)
         graph.add_node(AnalogNode(
             name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-            flops=2 * heads * head_dim,  # Per-token; actual depends on seq_len
+            flops=seq_len_sq * heads * head_dim,
         ))
-        
+
         # Softmax — DIGITAL
         graph.add_node(AnalogNode(
             name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-            flops=3 * heads,  # exp + sum + div per element
+            flops=seq_len_sq * heads,
         ))
-        
+
         # attn · V — DIGITAL (data-dependent)
         graph.add_node(AnalogNode(
             name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-            flops=2 * heads * head_dim,
+            flops=seq_len_sq * heads * head_dim,
         ))
-        
+
         # Output projection — ANALOG
         graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
 
 
 class DiTExtractor(BaseExtractor):
     """Extract analog parameters from Diffusion Transformers (DiT).
-    
+
     DiT replaces U-Net with transformer blocks, using AdaLN-Zero for
     timestep conditioning instead of channel-wise concatenation.
-    
+
     Key differences from U-Net for analog partition:
     - No GroupNorm (replaced by AdaLN — still digital)
     - Patch embedding replaces conv encoder (single large MVM)
     - Standard transformer attention blocks (same partition as LLMs)
     """
-    
+
+    def __init__(self, model_name: str, device: str = "cpu", seq_len: int | None = None):
+        super().__init__(model_name, device, seq_len=seq_len)
+
     @property
     def family(self) -> ArchitectureFamily:
         return ArchitectureFamily.DIFFUSION
+
+    def _get_seq_len(self) -> int:
+        """Get effective sequence length for FLOP calculations.
+
+        Uses self.seq_len if provided, otherwise defaults to 1024 (DiT standard).
+        """
+        if self.seq_len is not None:
+            return self.seq_len
+        return 1024  # DiT standard sequence length
     
     def load_model(self) -> None:
         """Load DiT from facebookresearch/DiT or diffusers."""
@@ -298,7 +320,7 @@ class DiTExtractor(BaseExtractor):
     
     def build_graph(self) -> AnalogGraph:
         """Build graph for DiT-XL/2 (28 transformer blocks, 675M params).
-        
+
         Per block: AdaLN → Attention → AdaLN → FFN
         AdaLN-Zero: timestep MLP regresses (γ, β, α) for scale/shift/gate.
         """
@@ -307,15 +329,18 @@ class DiTExtractor(BaseExtractor):
             family=ArchitectureFamily.DIFFUSION,
             model_params=675_000_000,
         )
-        
+
+        seq_len = self._get_seq_len()
+        seq_len_sq = seq_len * seq_len
+
         # Patch embedding: 256×256 image → 16×16 patches → 1024 tokens × 1152 dim
         dim = 1152
         graph.add_node(make_mvm_node("patch_embed", 4 * 16 * 16, dim))
-        
+
         # 28 DiT blocks
         for i in range(28):
             prefix = f"block_{i}"
-            
+
             # AdaLN conditioning MLP (small, digital)
             graph.add_node(AnalogNode(
                 name=f"{prefix}.adaln", op_type=OpType.ADALN,
@@ -323,33 +348,34 @@ class DiTExtractor(BaseExtractor):
                 input_shape=(dim,), output_shape=(6 * dim,),
                 flops=6 * dim * dim,  # Regress 6 modulation params
             ))
-            
+
             # Self-attention
             graph.add_node(make_mvm_node(f"{prefix}.qkv_proj", dim, 3 * dim))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(16, -1, 72), output_shape=(16, -1, -1),  # 16 heads
-                flops=2 * 16 * 72 * 1024,
+                flops=seq_len_sq * 16 * 72,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
-                input_shape=(16,), output_shape=(16,), flops=3 * 16 * 1024,
+                input_shape=(16, -1, -1), output_shape=(16, -1, -1),
+                flops=seq_len_sq * 16,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(16, -1, -1), output_shape=(16, -1, 72),
-                flops=2 * 16 * 72 * 1024,
+                flops=seq_len_sq * 16 * 72,
             ))
             graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
-            
+
             # FFN
             graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, 4 * dim))
             graph.add_node(make_activation_node(f"{prefix}.gelu", 4 * dim, "gelu"))
             graph.add_node(make_mvm_node(f"{prefix}.ffn2", 4 * dim, dim))
-            
+
             # Residual connections
             graph.add_node(AnalogNode(
                 name=f"{prefix}.residual1", op_type=OpType.SKIP_CONNECTION,
@@ -359,7 +385,7 @@ class DiTExtractor(BaseExtractor):
                 name=f"{prefix}.residual2", op_type=OpType.SKIP_CONNECTION,
                 domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
             ))
-        
+
         # Unpatchify: linear projection back to pixel space
         graph.add_node(make_mvm_node("unpatchify", dim, 4 * 16 * 16))
 
@@ -403,7 +429,7 @@ class DiffusionMLPExtractor:
         self._betas_np = betas.numpy()
         self._diff_module = diff_module
 
-    def run(self):
+    def run(self, log_profile_path: str | None = None):
         """Return a simple amenability profile dict (no full AnalogGraph needed)."""
         assert self.model is not None, "Call load_model() first"
         import torch
@@ -422,6 +448,32 @@ class DiffusionMLPExtractor:
         p.da_boundary_count = 0             # continuous ODE, no discrete components
         p.total_params = total_params
         p.mlp_params = mlp_params
+
+        # Save profile to JSON
+        if log_profile_path is None:
+            from pathlib import Path
+            import time
+            output_dir = Path("outputs/profiles")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = int(time.time())
+            log_profile_path = str(output_dir / f"diffusion_mlp_{timestamp}.json")
+
+        import json
+        profile_dict = {
+            "architecture": "diffusion",
+            "model_name": "diffusion_mlp",
+            "model_params": total_params,
+            "analog_flop_fraction": p.analog_flop_fraction,
+            "digital_flop_fraction": 0.0,
+            "hybrid_flop_fraction": 0.0,
+            "da_boundary_count": p.da_boundary_count,
+            "overall_score": p.overall_score,
+            "mlp_params": mlp_params,
+        }
+        with open(log_profile_path, "w") as f:
+            json.dump(profile_dict, f, indent=2)
+        print(f"[neuro-analog] Profile saved to: {log_profile_path}")
+
         return p
 
     def export_to_ark(self, output_path, mismatch_sigma: float = 0.05) -> str:

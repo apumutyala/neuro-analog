@@ -592,7 +592,7 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.output_dot", op_type=OpType.MVM,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner, N), output_shape=(D_inner,),
-                flops=D_inner * N,
+                flops=2 * D_inner * N,  # multiply + accumulate
             ))
 
             # ── Element-wise gate: y * silu(z)  — ANALOG multiplier ───────────
