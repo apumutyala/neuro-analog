@@ -201,7 +201,7 @@ class DEQExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(cfg.z_dim,),
             output_shape=(cfg.z_dim,),
-            flops=cfg.z_dim,
+            flops=2 * cfg.z_dim,  # multiply + accumulate per state variable
             metadata={
                 "description": "Analog state register: z held on capacitors between iterations",
                 "convergence_criterion": f"||z_{{k+1}} - z_k|| < {cfg.tol}",

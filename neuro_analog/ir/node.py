@@ -102,7 +102,7 @@ class AnalogNode:
     weight_shape: Optional[tuple[int, ...]] = None
     
     # Compute cost
-    flops: int = 0  # Multiply-accumulate operations
+    flops: int = 0  # FLOPs per sample (batch_size=1). Multiply by actual batch_size for total inference FLOPs.
     param_count: int = 0  # Number of learnable parameters
     
     # Hardware requirements

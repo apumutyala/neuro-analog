@@ -8,12 +8,13 @@ from neuro_analog.ir import AnalogGraph, AnalogAmenabilityProfile, ArchitectureF
 
 class BaseExtractor(ABC):
     """Abstract base class for architecture-specific extractors."""
-    def __init__(self, model_name: str, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(self, model_name: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", seq_len: int | None = None):
         self.model_name = model_name
         self.device = device
         self.model: Any = None
         self._graph: AnalogGraph | None = None
         self._activation_specs: dict[str, PrecisionSpec] | None = None
+        self.seq_len = seq_len  # Sequence length for FLOP calculations (None = use architecture default)
 
     @property
     @abstractmethod
@@ -144,7 +145,7 @@ class BaseExtractor(ABC):
             profile.compute_scores()
         return profile
 
-    def run(self, calibration_data: torch.Tensor | None = None) -> AnalogAmenabilityProfile:
+    def run(self, calibration_data: torch.Tensor | None = None, log_profile_path: str | None = None) -> AnalogAmenabilityProfile:
         """Full pipeline: load → extract → build graph → analyze.
 
         Args:
@@ -156,6 +157,8 @@ class BaseExtractor(ABC):
                 calibration data the activation fields in each PrecisionSpec remain zero
                 and ``AnalogLinear.calibrate()`` will fall back to a fixed default V_ref,
                 which may cause clipping (ADC saturation) or waste precision on headroom.
+            log_profile_path: Optional path to save profile as JSON. If None, saves to
+                outputs/profiles/{model_name}_{timestamp}.json by default.
         """
         print(f"[neuro-analog] Loading {self.model_name}...")
         self.load_model()
@@ -172,6 +175,22 @@ class BaseExtractor(ABC):
         profile = graph.analyze()
         profile = self._apply_activation_specs(profile)
         print(f"[neuro-analog] Done. Score: {profile.overall_score:.3f}")
+
+        # Save profile to JSON (always-on with default path)
+        if log_profile_path is None:
+            from pathlib import Path
+            import time
+            output_dir = Path("outputs/profiles")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = int(time.time())
+            safe_name = self.model_name.replace("/", "_").replace("\\", "_")
+            log_profile_path = str(output_dir / f"{safe_name}_{timestamp}.json")
+
+        import json
+        with open(log_profile_path, "w") as f:
+            json.dump(profile.to_dict(), f, indent=2)
+        print(f"[neuro-analog] Profile saved to: {log_profile_path}")
+
         return profile
 
     @property
