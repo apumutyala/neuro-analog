@@ -84,11 +84,6 @@ class DEQNet(nn.Module):
         
         for i in range(self.max_iter):
             z_next = self.deq_layer(z, x_proj)
-            
-            # Check convergence
-            if torch.norm(z_next - z) < self.tol:
-                break
-            
             z = z_next
         
         logits = self.classifier(z)
