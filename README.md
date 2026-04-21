@@ -15,17 +15,21 @@ We train 7 neural architecture families - Transformer, Neural ODE, SSM (S4D), DE
 The result is a 14-model, dual-task benchmark: the first systematic characterization of analog tolerance across modern architecture families at both image and language tasks.
 
 **Current Status:**
-- **Pilot study (small-scale)**: COMPLETE - results available in `experiments/cross_arch_tolerance/`
-- **Unified benchmark infrastructure**: COMPLETE - all 14 models implemented, training scripts ready
-- **Unified benchmark training**: NOT STARTED - infrastructure ready, awaiting compute resources
+- **Pilot study (small-scale)**: complete - results available in `experiments/cross_arch_tolerance/`
+- **Unified benchmark infrastructure**: complete - all 14 models implemented, training scripts ready
+- **Unified benchmark training**: pending - infrastructure ready, awaiting compute resources
 
 ---
 
 ## Background
 
-Existing analog simulation tools - CrossSim (Sandia), AIHWKit (IBM), NeuroSim (Stanford), and the recently published XBTorch (2025) - do device-level modeling well. They answer "how does this CNN perform on this crossbar." What they don't answer is the architecture-level question: among the modern zoo of model families, which computational structures are inherently analog-compatible and which ones break, and why?
+The closest prior work is IBM's demonstration of MoE-style transformer inference on 3D AIMC (Nature Computational Science, 2024) and the Nature Reviews Electrical Engineering (2025) survey of AIMC software stacks. 
 
-The closest prior work is IBM's demonstration of MoE-style transformer inference on 3D AIMC (Nature Computational Science, 2024) and the Nature Reviews Electrical Engineering (2025) survey of AIMC software stacks. Both confirm that analog hardware is ready for transformers. Neither asks what happens to architectures that rely on iterative fixed-point convergence or multi-step sampling pipelines under the same conditions.
+Existing analog simulation tools - CrossSim (Sandia), AIHWKit (IBM), NeuroSim (Stanford), and the recently published XBTorch (2025) - excel at device-level modeling, answering 'how does this CNN perform on this crossbar.'
+
+Both confirm that analog hardware is ready for transformers. 
+
+What they don't answer is the architecture-level question: among the modern zoo of model families, which computational structures are inherently analog-compatible and which ones break, and why? What happens to architectures that rely on iterative fixed-point convergence (DEQ) or multi-step sampling pipelines (diffusion) under the same conditions.
 
 We ask that question empirically, with a framework designed to be architecture-agnostic from the start.
 
@@ -37,43 +41,45 @@ Before the unified benchmark, we ran a pilot study: 7 tiny models (1K-103K param
 
 **Single-pass architectures are broadly analog-tolerant.** Transformer, Neural ODE, SSM, Normalizing Flow, and EBM all maintain >=90% normalized quality at sigma=15% mismatch. No failure threshold within the tested range.
 
-**Iterative convergence amplifies mismatch.** DEQ - the only architecture requiring fixed-point iteration z* = f(z*) - fails at sigma approx 12%. Mismatch in the weight matrices perturbs the contraction map, destabilizing convergence even when spectral normalization ensures a unique fixed point in the noise-free case.
+**Iterative convergence amplifies mismatch.** DEQ - the only architecture requiring fixed-point iteration z* = f(z*) - shows quality degradation at sigma approx 11%. The pilot study suggests fixed-point architectures may be more sensitive to analog noise, though further investigation is needed to isolate the mechanistic cause.
 
 **Multi-step pipelines accumulate quantization error.** Diffusion models (DDIM, 20 steps) never reach 90% quality at any sigma, including sigma=0. ADC quantization of the score network output accumulates across inference steps - a structural incompatibility with per-layer ADC, not a mismatch problem.
 
-These three failure modes are mechanistically distinct and map to identifiable computational patterns. The unified benchmark tests whether these patterns hold at real scale and across both image and language tasks.
+These three degradation patterns are structurally distinct and may map to identifiable computational patterns. The unified benchmark will test whether these patterns hold at real scale and across both image and language tasks.
 
 ### Pilot Results Tables
 
 **Conservative profile** (ADC at every layer boundary):
 
-| Architecture | sigma threshold @ 10% degradation | Dominant noise source | Min ADC bits |
-|---|---|---|---|
-| Neural ODE | >= 15% | negligible | 2 |
-| S4D (diagonal SSM) | >= 15% | negligible | 4 |
-| EBM | >= 15% | negligible | 4 |
-| Flow | >= 15% | mismatch | 4 |
-| Transformer | >= 15% | negligible | 4 |
-| **DEQ** | **12%** | mismatch | **6** |
-| Diffusion | N/A 1 | quantization | N/A 1 |
+| Architecture | sigma threshold @ 10% degradation | Dominant noise source |
+|---|---|---|
+| Neural ODE | >= 15% | negligible |
+| S4D (diagonal SSM) | >= 15% | negligible |
+| EBM | >= 15% | negligible |
+| Flow | >= 15% | mismatch |
+| Transformer | >= 15% | negligible |
+| **DEQ** | **11%** | mismatch |
+| Diffusion | N/A 1 | quantization |
 
 1 Diffusion's quality floor at approx 88% is present even at sigma=0. Structural quantization accumulation across 20 denoising steps - ADC bits don't help.
 
 **Full-analog profile** (ADC at final readout only):
 
-| Architecture | sigma threshold | Min ADC bits |
-|---|---|---|
-| Neural ODE | >= 15% | 2 |
-| S4D (diagonal SSM) | >= 15% | 4 |
-| EBM | >= 15% | 4 |
-| Flow | >= 15% | 4 |
-| Transformer | >= 15% | 2 |
-| **DEQ** | **12%** | **4** (down from 6) |
-| Diffusion | N/A | N/A |
+| Architecture | sigma threshold |
+|---|---|
+| Neural ODE | >= 15% |
+| S4D (diagonal SSM) | >= 15% |
+| EBM | >= 15% |
+| Flow | >= 15% |
+| Transformer | >= 15% |
+| **DEQ** | **12%** |
+| Diffusion | N/A |
 
-Removing per-layer ADC doesn't change the mismatch ranking but drops DEQ's ADC requirement from 6 to 4 bits - consistent with per-iteration ADC creating fixed-point limit cycles. Thermal noise is negligible across all families at demo-scale widths.
+Thermal noise is negligible across all families at demo-scale widths.
 
 50-trial Monte Carlo sweep, 1K-103K parameter models, small-scale tasks. Results available in `experiments/cross_arch_tolerance/results/` (136 JSON files with mismatch, ADC, ablation, thermal, and layer sensitivity data).
+
+Note: These findings are based on small-scale models on low-dimensional tasks. The unified benchmark infrastructure is complete, but training on CIFAR-10 and WikiText-2 awaits compute resources. When the unified benchmark completes, we will validate whether these patterns hold at meaningful scale.
 
 ---
 

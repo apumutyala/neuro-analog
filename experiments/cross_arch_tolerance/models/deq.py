@@ -159,16 +159,16 @@ class _DEQClassifier(nn.Module):
         max_iter = max_iter or self.max_iter
         tol = tol or self.tol
         z = torch.zeros(x.shape[0], self.z_dim, device=x.device)
-        converged = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         scale = math.sqrt(self.z_dim)
 
         with torch.no_grad():
             for _ in range(max_iter):
                 z_next = self.f_theta(z, x)
                 delta = (z_next - z).norm(dim=-1) / scale  # RMS per-element change
-                converged |= (delta < tol)
                 z = z_next
 
+        # Check convergence at final state only
+        converged = (delta < tol)
         failure_rate = 1.0 - converged.float().mean().item()
         return failure_rate
 
