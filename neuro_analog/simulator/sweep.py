@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 
 from .analog_model import analogize, resample_all_mismatch, set_all_noise, calibrate_analog_model, configure_analog_profile
+from ..ir.energy_model import HardwareProfile
 
 _DEFAULT_SIGMA_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
 _DEFAULT_BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
@@ -49,6 +50,13 @@ class SweepResult:
     metric_name: str
     per_trial: np.ndarray           # shape: (n_sigma, n_trials)
     digital_baseline: float         # metric at sigma=0, avg over n_trials
+    # Energy/latency metrics (optional, computed if hardware_profile provided)
+    analog_energy_pJ: float | None = None
+    digital_energy_pJ: float | None = None
+    analog_latency_ns: float | None = None
+    digital_latency_ns: float | None = None
+    energy_saving_vs_digital: float | None = None  # 1 - analog/digital
+    speedup_vs_digital: float | None = None  # digital/analog
 
     @property
     def mean(self) -> np.ndarray:
@@ -100,7 +108,7 @@ class SweepResult:
         return last_passing
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "sigma_values": self.sigma_values,
             "metric_name": self.metric_name,
             "per_trial": self.per_trial.tolist(),
@@ -111,6 +119,15 @@ class SweepResult:
             "normalized_std": self.normalized_std.tolist(),
             "degradation_threshold_10pct": self.degradation_threshold(0.10),
         }
+        # Add energy/latency metrics if available
+        if self.analog_energy_pJ is not None:
+            d["analog_energy_pJ"] = self.analog_energy_pJ
+            d["digital_energy_pJ"] = self.digital_energy_pJ
+            d["analog_latency_ns"] = self.analog_latency_ns
+            d["digital_latency_ns"] = self.digital_latency_ns
+            d["energy_saving_vs_digital"] = self.energy_saving_vs_digital
+            d["speedup_vs_digital"] = self.speedup_vs_digital
+        return d
 
     def save(self, path: str) -> None:
         with open(path, "w") as f:
@@ -125,6 +142,12 @@ class SweepResult:
             metric_name=d["metric_name"],
             per_trial=np.array(d["per_trial"]),
             digital_baseline=d["digital_baseline"],
+            analog_energy_pJ=d.get("analog_energy_pJ"),
+            digital_energy_pJ=d.get("digital_energy_pJ"),
+            analog_latency_ns=d.get("analog_latency_ns"),
+            digital_latency_ns=d.get("digital_latency_ns"),
+            energy_saving_vs_digital=d.get("energy_saving_vs_digital"),
+            speedup_vs_digital=d.get("speedup_vs_digital"),
         )
 
 
@@ -136,6 +159,7 @@ def mismatch_sweep(
     n_adc_bits: int = 8,
     calibration_data: torch.Tensor | None = None,
     analog_domain: str = "conservative",
+    hardware_profile: HardwareProfile | None = None,
     **analog_kwargs,
 ) -> SweepResult:
     """Monte Carlo mismatch sweep.
@@ -177,11 +201,38 @@ def mismatch_sweep(
         if i % 3 == 0:
             print(f"  sigma={sigma:.3f}: mean={per_trial[i].mean():.4f} ± {per_trial[i].std():.4f}")
 
+    # Compute energy/latency if hardware_profile provided
+    analog_energy_pJ = None
+    digital_energy_pJ = None
+    analog_latency_ns = None
+    digital_latency_ns = None
+    energy_saving_vs_digital = None
+    speedup_vs_digital = None
+
+    if hardware_profile is not None:
+        # Count model parameters as proxy for MACs
+        macs = sum(p.numel() for p in model.parameters())
+        # Compute energy
+        analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
+        digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
+        # Compute latency
+        analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
+        digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
+        # Compute ratios
+        energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
+        speedup_vs_digital = digital_latency_ns / analog_latency_ns
+
     return SweepResult(
         sigma_values=sigma_values,
         metric_name="quality",
         per_trial=per_trial,
         digital_baseline=digital_baseline,
+        analog_energy_pJ=analog_energy_pJ,
+        digital_energy_pJ=digital_energy_pJ,
+        analog_latency_ns=analog_latency_ns,
+        digital_latency_ns=digital_latency_ns,
+        energy_saving_vs_digital=energy_saving_vs_digital,
+        speedup_vs_digital=speedup_vs_digital,
     )
 
 
@@ -193,6 +244,7 @@ def adc_sweep(
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
     analog_domain: str = "conservative",
+    hardware_profile: HardwareProfile | None = None,
     **analog_kwargs,
 ) -> SweepResult:
     """Sweep ADC precision at fixed mismatch level.
@@ -231,11 +283,34 @@ def adc_sweep(
 
         print(f"  bits={bits}: mean={per_trial[i].mean():.4f} ± {per_trial[i].std():.4f}")
 
+    # Compute energy/latency if hardware_profile provided
+    analog_energy_pJ = None
+    digital_energy_pJ = None
+    analog_latency_ns = None
+    digital_latency_ns = None
+    energy_saving_vs_digital = None
+    speedup_vs_digital = None
+
+    if hardware_profile is not None:
+        macs = sum(p.numel() for p in model.parameters())
+        analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
+        digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
+        analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
+        digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
+        energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
+        speedup_vs_digital = digital_latency_ns / analog_latency_ns
+
     return SweepResult(
         sigma_values=[float(b) for b in bit_values],
         metric_name=f"quality_vs_adc_bits_sigma{sigma_mismatch:.3f}",
         per_trial=per_trial,
         digital_baseline=digital_baseline,
+        analog_energy_pJ=analog_energy_pJ,
+        digital_energy_pJ=digital_energy_pJ,
+        analog_latency_ns=analog_latency_ns,
+        digital_latency_ns=digital_latency_ns,
+        energy_saving_vs_digital=energy_saving_vs_digital,
+        speedup_vs_digital=speedup_vs_digital,
     )
 
 
@@ -246,6 +321,7 @@ def ablation_sweep(
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
     analog_domain: str = "conservative",
+    hardware_profile: HardwareProfile | None = None,
     **analog_kwargs,
 ) -> dict[str, SweepResult]:
     """Run three sweeps isolating each noise source independently.
@@ -292,11 +368,34 @@ def ablation_sweep(
                     resample_all_mismatch(analog_model)
                 per_trial[i, j] = eval_fn(analog_model)
 
+        # Compute energy/latency if hardware_profile provided
+        analog_energy_pJ = None
+        digital_energy_pJ = None
+        analog_latency_ns = None
+        digital_latency_ns = None
+        energy_saving_vs_digital = None
+        speedup_vs_digital = None
+
+        if hardware_profile is not None:
+            macs = sum(p.numel() for p in model.parameters())
+            analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
+            digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
+            analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
+            digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
+            energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
+            speedup_vs_digital = digital_latency_ns / analog_latency_ns
+
         results[name] = SweepResult(
             sigma_values=sigma_values,
             metric_name=f"quality_{name}_only",
             per_trial=per_trial,
             digital_baseline=digital_baseline,
+            analog_energy_pJ=analog_energy_pJ,
+            digital_energy_pJ=digital_energy_pJ,
+            analog_latency_ns=analog_latency_ns,
+            digital_latency_ns=digital_latency_ns,
+            energy_saving_vs_digital=energy_saving_vs_digital,
+            speedup_vs_digital=speedup_vs_digital,
         )
 
     return results

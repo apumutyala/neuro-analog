@@ -35,6 +35,7 @@ from neuro_analog.simulator import (
     ablation_sweep,
     count_analog_vs_digital,
 )
+from neuro_analog.ir.energy_model import HardwareProfile
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -114,11 +115,13 @@ def main():
 
     # 3. Mismatch sweep (σ = 0.0 → 0.15)
     print("Running mismatch sweep (σ = 0.0 → 0.15, 30 trials)...")
+    profile = HardwareProfile()
     sweep = mismatch_sweep(
         model, eval_fn,
         sigma_values=[0.0, 0.02, 0.05, 0.07, 0.10, 0.12, 0.15],
         n_trials=30,
         n_adc_bits=8,
+        hardware_profile=profile,
     )
     print(f"\n  {'σ':>6}  {'accuracy':>9}  {'±':>6}  {'retained':>9}")
     for i, s in enumerate(sweep.sigma_values):
@@ -126,6 +129,10 @@ def main():
               f"{sweep.normalized_mean[i]:8.1%}")
     threshold = sweep.degradation_threshold(max_relative_loss=0.05)
     print(f"\n  5% degradation threshold: σ ≈ {threshold:.3f}")
+    if sweep.energy_saving_vs_digital is not None:
+        print(f"  Energy saving vs digital: {sweep.energy_saving_vs_digital*100:.1f}%")
+    if sweep.speedup_vs_digital is not None:
+        print(f"  Speedup vs digital: {sweep.speedup_vs_digital:.1f}x")
 
     # 4. ADC precision sweep
     print("\nRunning ADC precision sweep (bits = 2 → 12, 20 trials)...")

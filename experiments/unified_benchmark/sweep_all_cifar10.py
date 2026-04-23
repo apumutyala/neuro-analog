@@ -16,6 +16,7 @@ import torchvision.transforms as transforms
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from neuro_analog.simulator import analogize, mismatch_sweep
+from neuro_analog.ir.energy_model import HardwareProfile
 from models import (
     NeuralODENet, S4DNet, DEQNet, DiffusionClassifier,
     FlowClassifier, EBMClassifier, ViTClassifier
@@ -111,6 +112,9 @@ def run_sweep(arch_name, checkpoint_dir, output_dir,
     test_loader = get_test_loader()
     calibration_batch = next(iter(test_loader))[0][:32].to(device)
 
+    # Hardware profile for energy/latency estimation
+    profile = HardwareProfile()
+
     result = mismatch_sweep(
         model,
         eval_fn=evaluate_accuracy,
@@ -118,16 +122,21 @@ def run_sweep(arch_name, checkpoint_dir, output_dir,
         n_trials=n_trials,
         n_adc_bits=n_adc_bits,
         calibration_data=calibration_batch,  # Critical: prevents ADC clipping
-        analog_domain='conservative'
+        analog_domain='conservative',
+        hardware_profile=profile,
     )
-    
+
     output_path = output_dir / f"{arch_name}_cifar10_sweep.json"
     result.save(str(output_path))
-    
+
     threshold = result.degradation_threshold(0.10)
     print(f"\nResults:")
     print(f"  Baseline accuracy: {result.digital_baseline:.2f}%")
     print(f"  Threshold @ 10% loss: σ = {threshold:.3f}")
+    if result.energy_saving_vs_digital is not None:
+        print(f"  Energy saving vs digital: {result.energy_saving_vs_digital*100:.1f}%")
+    if result.speedup_vs_digital is not None:
+        print(f"  Speedup vs digital: {result.speedup_vs_digital:.1f}x")
     print(f"  Saved to: {output_path}")
     
     return result

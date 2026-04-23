@@ -17,6 +17,7 @@ from .types import (
     ArchitectureFamily, AnalogAmenabilityProfile, Domain, DynamicsProfile, OpType, TargetBackend,
 )
 from .node import AnalogNode
+from .energy_model import HardwareProfile, estimate_node_cost
 
 
 @dataclass
@@ -97,16 +98,18 @@ class AnalogGraph:
                 boundaries.append(DABoundary(src_id, tgt_id, src.domain, tgt.domain))
         return boundaries
 
-    def analyze(self, target_backend: TargetBackend | None = None) -> AnalogAmenabilityProfile:
+    def analyze(self, target_backend: TargetBackend | None = None, hardware_profile: HardwareProfile | None = None) -> AnalogAmenabilityProfile:
         """Compute analog amenability profile for this graph.
         
         Args:
             target_backend: Target hardware backend. If specified and not ANALOG_CIRCUIT,
                 compute_scores() will raise an error (analog-physics scoring not valid).
                 If None (default), assumes analog-circuit backend (legacy behavior).
+            hardware_profile: Optional HardwareProfile for energy/latency estimation.
+                If provided, computes energy and latency metrics for analog vs digital.
         
         Returns:
-            AnalogAmenabilityProfile with computed scores.
+            AnalogAmenabilityProfile with computed scores and optionally energy/latency metrics.
         """
         fractions = self.flop_fractions()
         boundaries = self.find_da_boundaries()
@@ -127,7 +130,51 @@ class AnalogGraph:
             hybrid_flop_fraction=fractions.get(Domain.HYBRID, 0.0),
             da_boundary_count=len(boundaries), dynamics=self._dynamics,
             min_weight_precision_bits=min_bits,
+            layer_count=self.node_count,
         )
+        
+        # Compute energy/latency metrics if hardware profile provided
+        if hardware_profile is not None:
+            analog_energy_pJ = 0.0
+            digital_energy_pJ = 0.0
+            analog_latency_ns = 0.0
+            digital_latency_ns = 0.0
+            
+            # Estimate cost for each node
+            for node in self.nodes:
+                estimate = estimate_node_cost(node, hardware_profile)
+                
+                # Store estimate on node
+                if node.domain == Domain.ANALOG or node.domain == Domain.HYBRID:
+                    node.analog_estimate = estimate
+                    analog_energy_pJ += estimate.energy_pJ
+                    analog_latency_ns += estimate.latency_ns
+                else:
+                    node.digital_estimate = estimate
+                    digital_energy_pJ += estimate.energy_pJ
+                    digital_latency_ns += estimate.latency_ns
+            
+            # Add ADC/DAC costs for D/A boundaries
+            adc_count = sum(1 for b in boundaries if b.direction == "ADC")
+            dac_count = sum(1 for b in boundaries if b.direction == "DAC")
+            
+            analog_energy_pJ += adc_count * hardware_profile.adc_energy_pJ
+            analog_energy_pJ += dac_count * hardware_profile.dac_energy_pJ
+            analog_latency_ns += adc_count * hardware_profile.adc_latency_ns
+            analog_latency_ns += dac_count * hardware_profile.dac_latency_ns
+            
+            # Store metrics in profile
+            profile.analog_energy_pJ = analog_energy_pJ
+            profile.digital_energy_pJ = digital_energy_pJ
+            profile.analog_latency_ns = analog_latency_ns
+            profile.digital_latency_ns = digital_latency_ns
+            
+            # Compute speedup and energy savings vs digital baseline
+            if digital_latency_ns > 0:
+                profile.analog_speedup_vs_digital = digital_latency_ns / analog_latency_ns if analog_latency_ns > 0 else 0.0
+            if digital_energy_pJ > 0:
+                profile.analog_energy_saving_vs_digital = 1.0 - (analog_energy_pJ / digital_energy_pJ)
+        
         profile.compute_scores(target_backend=target_backend)
         return profile
 
