@@ -293,6 +293,19 @@ class AnalogAmenabilityProfile:
     noise_score: float = 0.0        # Fraction of analog FLOPs meeting SNR targets
     overall_score: float = 0.0      # Weighted composite
     
+    # Energy and latency metrics
+    analog_energy_pJ: float = 0.0
+    digital_energy_pJ: float = 0.0
+    analog_latency_ns: float = 0.0
+    digital_latency_ns: float = 0.0
+    analog_speedup_vs_digital: float = 0.0
+    analog_energy_saving_vs_digital: float = 0.0
+    
+    # Amenability scoring (empirical, based on sweep results)
+    layer_count: int = 0
+    sigma_10pct: float = 0.0        # Sigma at 10% degradation from sweep results
+    amenability_score: float = 0.0  # Empirical amenability score (0-1)
+    
     def compute_scores(self, weights: dict[str, float] | None = None, target_backend: 'TargetBackend | None' = None):
         """Compute composite scores from raw metrics.
         
@@ -397,6 +410,17 @@ class AnalogAmenabilityProfile:
             "boundary_score": self.boundary_score,
             "noise_score": self.noise_score,
             "overall_score": self.overall_score,
+            # Energy and latency metrics
+            "analog_energy_pJ": self.analog_energy_pJ,
+            "digital_energy_pJ": self.digital_energy_pJ,
+            "analog_latency_ns": self.analog_latency_ns,
+            "digital_latency_ns": self.digital_latency_ns,
+            "analog_speedup_vs_digital": self.analog_speedup_vs_digital,
+            "analog_energy_saving_vs_digital": self.analog_energy_saving_vs_digital,
+            # Amenability scoring
+            "layer_count": self.layer_count,
+            "sigma_10pct": self.sigma_10pct,
+            "amenability_score": self.amenability_score,
             "dynamics": {
                 "has_dynamics": self.dynamics.has_dynamics,
                 "dynamics_type": self.dynamics.dynamics_type,

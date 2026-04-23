@@ -47,6 +47,7 @@ import torch
 
 from models import neural_ode, transformer, diffusion, flow, ebm, deq, ssm
 from neuro_analog.simulator import mismatch_sweep, adc_sweep, ablation_sweep, resample_all_mismatch, set_all_noise, analogize, configure_analog_profile
+from neuro_analog.ir.energy_model import HardwareProfile
 
 _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -67,11 +68,12 @@ _BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
 _SUBSTRATE_AWARE = {"diffusion", "neural_ode", "flow", "deq"}
 
 # All supported substrates per architecture (first = default, adds no filename suffix).
+# Circuit modes are now default (first in list) to measure true analog hyperefficiency.
 _ALL_SUBSTRATES_BY_NAME = {
     "diffusion":  ["classic", "cld"],  # extropic_dtm excluded from 'all' — substrate broken, re-enable explicitly
-    "neural_ode": ["euler", "rc_integrator"],
-    "flow":       ["euler", "rc_integrator"],
-    "deq":        ["discrete", "hopfield"],
+    "neural_ode": ["rc_integrator", "euler"],  # CHANGED: circuit mode first
+    "flow":       ["rc_integrator", "euler"],  # CHANGED: circuit mode first
+    "deq":        ["hopfield", "discrete"],    # CHANGED: circuit mode first
 }
 # Default substrate per architecture (used for filename suffix logic).
 _DEFAULT_SUBSTRATE = {name: subs[0] for name, subs in _ALL_SUBSTRATES_BY_NAME.items()}
@@ -153,22 +155,29 @@ def sweep_one(
     # would clip ~32% of samples and corrupt the generation baseline.
     gaussian_kwargs = {"v_ref_input": 3.3} if name in _GAUSSIAN_INPUT_MODELS else {}
 
+    # Hardware profile for energy/latency estimation
+    profile = HardwareProfile()
+
     if not adc_only:
         # 1. Mismatch sweep
         print(f"\n[{name}] Mismatch sweep ({analog_domain})...")
         t0 = time.time()
         result = mismatch_sweep(model, eval_fn, sigma_values=sigma_values, n_trials=n_trials,
                                 calibration_data=calib_data_to_use, analog_domain=analog_domain,
-                                **gaussian_kwargs)
+                                hardware_profile=profile, **gaussian_kwargs)
         result.save(str(_RESULTS_DIR / f"{name}_mismatch{suffix}.json"))
         print(f"  Done in {time.time()-t0:.0f}s. Threshold@10%: {result.degradation_threshold():.3f}")
+        if result.energy_saving_vs_digital is not None:
+            print(f"  Energy saving vs digital: {result.energy_saving_vs_digital*100:.1f}%")
+        if result.speedup_vs_digital is not None:
+            print(f"  Speedup vs digital: {result.speedup_vs_digital:.1f}x")
 
         # 2. Ablation sweep
         print(f"\n[{name}] Ablation sweep ({analog_domain})...")
         t0 = time.time()
         ablation = ablation_sweep(model, eval_fn, sigma_values=sigma_values,
                                   n_trials=max(10, n_trials//5), calibration_data=calib_data_to_use,
-                                  analog_domain=analog_domain, **gaussian_kwargs)
+                                  analog_domain=analog_domain, hardware_profile=profile, **gaussian_kwargs)
         for noise_type, res in ablation.items():
             res.save(str(_RESULTS_DIR / f"{name}_ablation_{noise_type}{suffix}.json"))
         print(f"  Done in {time.time()-t0:.0f}s")
@@ -178,9 +187,13 @@ def sweep_one(
     t0 = time.time()
     adc_result = adc_sweep(model, eval_fn, bit_values=adc_bits, sigma_mismatch=adc_sigma,
                            n_trials=max(20, n_trials//2), calibration_data=calib_data_to_use,
-                           analog_domain=analog_domain, **gaussian_kwargs)
+                           analog_domain=analog_domain, hardware_profile=profile, **gaussian_kwargs)
     adc_result.save(str(_RESULTS_DIR / f"{name}_adc{suffix}.json"))
     print(f"  Done in {time.time()-t0:.0f}s")
+    if adc_result.energy_saving_vs_digital is not None:
+        print(f"  Energy saving vs digital: {adc_result.energy_saving_vs_digital*100:.1f}%")
+    if adc_result.speedup_vs_digital is not None:
+        print(f"  Speedup vs digital: {adc_result.speedup_vs_digital:.1f}x")
 
     # 4. Output MSE sweep (direct corruption measurement)
     # Only run for conservative domain (MSE is domain-agnostic: it measures

@@ -1,10 +1,11 @@
 """Base extractor interface for architecture-specific parameter extraction."""
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 import math
 import torch
 from neuro_analog.ir import AnalogGraph, AnalogAmenabilityProfile, ArchitectureFamily, DynamicsProfile, PrecisionSpec
+from neuro_analog.ir.energy_model import HardwareProfile
 
 class BaseExtractor(ABC):
     """Abstract base class for architecture-specific extractors."""
@@ -145,7 +146,7 @@ class BaseExtractor(ABC):
             profile.compute_scores()
         return profile
 
-    def run(self, calibration_data: torch.Tensor | None = None, log_profile_path: str | None = None) -> AnalogAmenabilityProfile:
+    def run(self, calibration_data: torch.Tensor | None = None, log_profile_path: str | None = None, hardware_profile: HardwareProfile | None = None) -> AnalogAmenabilityProfile:
         """Full pipeline: load → extract → build graph → analyze.
 
         Args:
@@ -159,6 +160,8 @@ class BaseExtractor(ABC):
                 which may cause clipping (ADC saturation) or waste precision on headroom.
             log_profile_path: Optional path to save profile as JSON. If None, saves to
                 outputs/profiles/{model_name}_{timestamp}.json by default.
+            hardware_profile: Optional HardwareProfile for energy/latency estimation.
+                If provided, computes energy and latency metrics for analog vs digital.
         """
         print(f"[neuro-analog] Loading {self.model_name}...")
         self.load_model()
@@ -172,9 +175,13 @@ class BaseExtractor(ABC):
             print("[neuro-analog] Calibrating activations...")
             self._activation_specs = self.calibrate_activations(calibration_data)
         print("[neuro-analog] Analyzing...")
-        profile = graph.analyze()
+        profile = graph.analyze(hardware_profile=hardware_profile)
         profile = self._apply_activation_specs(profile)
         print(f"[neuro-analog] Done. Score: {profile.overall_score:.3f}")
+        if hardware_profile is not None:
+            print(f"[neuro-analog] Energy: analog={profile.analog_energy_pJ:.2e} pJ, digital={profile.digital_energy_pJ:.2e} pJ")
+            print(f"[neuro-analog] Latency: analog={profile.analog_latency_ns:.2e} ns, digital={profile.digital_latency_ns:.2e} ns")
+            print(f"[neuro-analog] Speedup: {profile.analog_speedup_vs_digital:.2f}x, Energy saving: {profile.analog_energy_saving_vs_digital:.1%}")
 
         # Save profile to JSON (always-on with default path)
         if log_profile_path is None:

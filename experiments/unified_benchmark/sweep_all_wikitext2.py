@@ -15,6 +15,7 @@ import math
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from neuro_analog.simulator import analogize, mismatch_sweep
+from neuro_analog.ir.energy_model import HardwareProfile
 
 def load_model_and_data(arch, checkpoint_dir, device):
     """Load trained model and test data."""
@@ -153,88 +154,34 @@ def sweep_single_model(arch, checkpoint_dir, output_dir, sigma_values,
     # Get calibration data (sample batch from test set)
     calibration_batch = next(iter(test_loader))[0][:32].to(device)
 
-    # Sweep configuration
-    sweep_config = {
-        'sigma_values': sigma_values,
-        'n_trials': n_trials,
-        'adc_bits': 8,
-        'adc_mode': 'conservative'
-    }
-    
-    results = {
-        'arch': arch,
-        'digital_baseline': float(baseline_ppl),
-        'sigma_values': sigma_values,
-        'perplexity_mean': [],
-        'perplexity_std': [],
-        'normalized_mean': [],
-        'normalized_std': []
-    }
-    
-    # Run sweep for each sigma
-    for sigma in tqdm(sigma_values, desc=f"Sweeping {arch}"):
-        trial_perplexities = []
+    # Hardware profile for energy/latency estimation
+    profile = HardwareProfile()
 
-        for trial in range(n_trials):
-            # Analogize model with correct kwarg names (sigma_mismatch, n_adc_bits)
-            analog_model = analogize(
-                model,
-                sigma_mismatch=sigma,
-                n_adc_bits=sweep_config['adc_bits'],
-            )
+    # Use mismatch_sweep for consistency with CIFAR-10 and to get energy/latency metrics
+    result = mismatch_sweep(
+        model,
+        eval_fn=lambda m: compute_perplexity(m, test_loader, device),
+        sigma_values=sigma_values,
+        n_trials=n_trials,
+        n_adc_bits=8,
+        calibration_data=calibration_batch,
+        analog_domain='conservative',
+        hardware_profile=profile,
+    )
 
-            # Calibrate V_ref from calibration data (critical: prevents ADC clipping)
-            from neuro_analog.simulator import calibrate_analog_model
-            calibrate_analog_model(analog_model, calibration_batch)
-            
-            # Apply ADC profile and disable thermal (pure mismatch sweep)
-            from neuro_analog.simulator import configure_analog_profile, set_all_noise
-            configure_analog_profile(analog_model, sweep_config['adc_mode'])
-            set_all_noise(analog_model, mismatch=True, thermal=False, quantization=True)
-            
-            # Evaluate
-            ppl = compute_perplexity(analog_model, test_loader, device)
-            trial_perplexities.append(ppl)
-        
-        mean_ppl = np.mean(trial_perplexities)
-        std_ppl = np.std(trial_perplexities)
-        
-        results['perplexity_mean'].append(float(mean_ppl))
-        results['perplexity_std'].append(float(std_ppl))
-        results['normalized_mean'].append(float(baseline_ppl / mean_ppl))
-        results['normalized_std'].append(float(std_ppl / baseline_ppl))
-        
-        logging.info(f"σ={sigma:.3f}: PPL={mean_ppl:.2f}±{std_ppl:.2f} "
-                    f"(normalized={baseline_ppl/mean_ppl:.3f})")
-    
-    # Compute degradation threshold (10% increase in perplexity = 10% decrease in normalized)
-    normalized = np.array(results['normalized_mean'])
-    threshold_idx = np.where(normalized < 0.90)[0]
-    
-    if len(threshold_idx) > 0:
-        # Interpolate threshold
-        idx = threshold_idx[0]
-        if idx > 0:
-            x1, x2 = sigma_values[idx-1], sigma_values[idx]
-            y1, y2 = normalized[idx-1], normalized[idx]
-            threshold = x1 + (0.90 - y1) * (x2 - x1) / (y2 - y1)
-        else:
-            threshold = sigma_values[0]
-    else:
-        threshold = sigma_values[-1]
-    
-    results['degradation_threshold_10pct'] = float(threshold)
-    
-    logging.info(f"Threshold @ 10% degradation: σ={threshold:.3f}")
-    
-    # Save results
+    # Save results using SweepResult's save method (includes energy/latency)
     output_path = Path(output_dir) / f"{arch}_lm_sweep.json"
-    with open(output_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
+    result.save(str(output_path))
+
+    threshold = result.degradation_threshold(0.10)
+    logging.info(f"Threshold @ 10% degradation: σ={threshold:.3f}")
+    if result.energy_saving_vs_digital is not None:
+        logging.info(f"Energy saving vs digital: {result.energy_saving_vs_digital*100:.1f}%")
+    if result.speedup_vs_digital is not None:
+        logging.info(f"Speedup vs digital: {result.speedup_vs_digital:.1f}x")
     logging.info(f"Results saved to {output_path}")
-    
-    return results
+
+    return result
 
 def main():
     parser = argparse.ArgumentParser(description="Sweep WikiText-2 models")

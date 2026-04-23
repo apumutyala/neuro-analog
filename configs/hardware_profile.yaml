@@ -1,0 +1,32 @@
+# Hardware profile for energy/latency estimation
+# 
+# All energy values in picojoules (pJ), latency in nanoseconds (ns)
+# Throughput in operations per second
+#
+# Sources:
+# - Crossbar: IBM PCM arrays ~5 pJ/MAC (Nature Comp. Sci. 2024)
+# - ADC: 0.5-1 pJ/conversion at 1 MSPS (AIMC surveys)
+# - Digital MAC: 100-500 pJ/MAC (GPU/SRAM-IMC baselines)
+
+# Crossbar (analog MAC)
+analog_mac_energy_pJ: 5.0  # Energy per MAC operation
+analog_mac_throughput: 1e12  # MAC/s (1 TOPS)
+
+# Integrator (ODE/SDE state update)
+integrator_energy_pJ_per_state: 0.5  # Energy per state variable
+integrator_time_constant_s: 1e-3  # RC time constant
+
+# ADC/DAC (domain conversion)
+adc_energy_pJ: 0.8  # Energy per ADC conversion
+adc_latency_ns: 1000.0  # Latency per conversion
+dac_energy_pJ: 0.8  # Energy per DAC conversion
+dac_latency_ns: 1000.0  # Latency per conversion
+
+# Digital baseline (GPU/SRAM-IMC)
+digital_mac_energy_pJ: 100.0  # Energy per digital MAC
+digital_mac_throughput: 1e11  # MAC/s (100 GOPS)
+digital_memory_access_pJ: 10.0  # Energy per memory access
+
+# Thermodynamic sampling (EBM, DTM)
+thermodynamic_sample_energy_pJ: 0.35  # Energy per sampled bit (350 aJ)
+rng_latency_ns: 100.0  # RNG flip time
