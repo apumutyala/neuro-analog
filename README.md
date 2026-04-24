@@ -18,6 +18,12 @@ This trains a tiny MLP, converts it to analog, runs a mismatch sweep, and report
 
 For a deeper walkthrough, see `notebooks/quickstart_tour.ipynb`.
 
+For specialized deep-dives on specific topics:
+- `notebooks/architecture_families.ipynb` - Computational patterns and analog amenability across 7 architecture families
+- `notebooks/intermediate_representation.ipynb` - IR system, graph construction, and hardware annotation
+- `notebooks/amenability_analysis.ipynb` - Amenability scoring, failure modes, and design recommendations
+- `notebooks/ark_export.ipynb` - Ark export pipeline for analog circuit compilation
+
 ## What This Does
 
 Modern neural architectures go beyond transformers and CNNs. State-space models (S4, Mamba), deep equilibrium networks (DEQs), normalizing flows, energy-based models, and diffusion models each have different computational structures. Analog in-memory computing (AIMC) hardware offers 10-100x energy reduction for inference, but not all architectures tolerate analog noise equally.
@@ -55,6 +61,8 @@ The codebase separates concerns into two layers:
 - `HardwareProfile` defines energy/latency constants (5 pJ/MAC analog, 100 pJ/MAC digital)
 - `estimate_node_cost()` maps each operation to hardware estimates
 - Amenability scoring evaluates analog compatibility
+
+See `notebooks/intermediate_representation.ipynb` for a deep dive into the IR system.
 
 ### Circuit-Level Computation Modes
 
@@ -175,24 +183,29 @@ experiments/
 examples/
   01_quickstart.py    # Basic usage example
 notebooks/
-  quickstart_tour.ipynb  # Interactive walkthrough
+  quickstart_tour.ipynb          # Interactive walkthrough (15-20 min)
+  architecture_families.ipynb   # Deep dive on 7 architecture families
+  intermediate_representation.ipynb  # Deep dive on IR system
+  amenability_analysis.ipynb    # Deep dive on amenability scoring
+  ark_export.ipynb              # Deep dive on Ark export pipeline
 ```
 
 ## For Hardware Architects
 
 Use this codebase to:
-- Identify which neural architectures map naturally to your analog substrate
-- Understand where D/A boundaries occur in modern models
+- Identify which neural architectures map naturally to your analog substrate (see `notebooks/architecture_families.ipynb`)
+- Understand where D/A boundaries occur in modern models (see `notebooks/intermediate_representation.ipynb`)
 - Estimate energy/latency gains for different architectures
-- Validate that your target models tolerate your device noise levels
+- Validate that your target models tolerate your device noise levels (see `notebooks/amenability_analysis.ipynb`)
 
 ## For ML Researchers
 
 Use this codebase to:
-- Understand how your model will behave on analog hardware
-- Identify analog-incompatible operations in your architecture
+- Understand how your model will behave on analog hardware (see `notebooks/quickstart_tour.ipynb`)
+- Identify analog-incompatible operations in your architecture (see `notebooks/intermediate_representation.ipynb`)
 - Estimate energy/latency gains from analog deployment
-- Compare analog tolerance across architecture families
+- Compare analog tolerance across architecture families (see `notebooks/architecture_families.ipynb`)
+- Export ODE-based models to analog circuits (see `notebooks/ark_export.ipynb`)
 
 ## Citation
 
