@@ -261,11 +261,11 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
-def evaluate(model: nn.Module) -> float:
-    """Return negative cross-entropy loss (continuous metric, higher = better).
+def evaluate(model: nn.Module, substrate: str | None = None) -> float:
+    """Return classification accuracy in [0, 1] (higher = better).
     
-    Cross-entropy measures the full logit distribution, not just argmax.
-    Degrades smoothly with analog noise because logit magnitudes matter.
+    Accuracy is the fraction of correct predictions on the test set.
+    More robust and interpretable than negative loss.
     """
     device = next(itertools.chain(model.parameters(), model.buffers())).device
     _, (X_test, y_test) = _get_data()
@@ -273,14 +273,15 @@ def evaluate(model: nn.Module) -> float:
     model.eval()
     with torch.no_grad():
         logits = model(X_test)
-        loss = nn.functional.cross_entropy(logits, y_test)
-    return -loss.item()  # Negative so higher = better
+        predictions = logits.argmax(dim=-1)
+        accuracy = (predictions == y_test).float().mean().item()
+    return accuracy  # Accuracy in [0, 1], higher = better
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline outputs.
     
-    Returns negative MSE so higher = better (consistent with other metrics).
+    Returns positive MSE (lower = better).
     """
     device = next(itertools.chain(model.parameters(), model.buffers())).device
     _, (X_test, _) = _get_data()
@@ -294,7 +295,36 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
         analog_out = model(X_test)
 
     mse = ((dig_out - analog_out) ** 2).mean().item()
-    return -mse
+    return mse  # Positive MSE, lower = better
+
+
+def dynamics_metrics(model: nn.Module) -> dict:
+    """Return SSM-specific dynamics diagnostics for analog sweep logging.
+
+    Returns dict with:
+      - time_constant_spread: max|A_bar| / min|A_bar| across all layers
+      - mean_state_dimension: average d_state across layers
+      - n_layers: number of S4D layers
+    """
+    metrics = {"time_constant_spread": 1.0, "mean_state_dimension": 0, "n_layers": 0}
+    layers = getattr(model, "layers", [])
+    spreads = []
+    state_dims = []
+    for layer in layers:
+        if hasattr(layer, "_get_discrete_params"):
+            A_bar = layer._get_discrete_params()
+            abs_vals = A_bar.abs()
+            min_abs = abs_vals[abs_vals > 0].min().item() if (abs_vals > 0).any() else 1e-6
+            max_abs = abs_vals.max().item()
+            spreads.append(max_abs / min_abs)
+        if hasattr(layer, "d_state"):
+            state_dims.append(layer.d_state)
+    if spreads:
+        metrics["time_constant_spread"] = float(sum(spreads) / len(spreads))
+    if state_dims:
+        metrics["mean_state_dimension"] = float(sum(state_dims) / len(state_dims))
+    metrics["n_layers"] = len(layers)
+    return metrics
 
 
 def get_family_name() -> str:

@@ -102,7 +102,8 @@ class AnalogNode:
     weight_shape: Optional[tuple[int, ...]] = None
     
     # Compute cost
-    flops: int = 0  # FLOPs per sample (batch_size=1). Multiply by actual batch_size for total inference FLOPs.
+    seq_len: int = 1  # Sequence length or batch size.
+    flops: int = 0  # Total inference FLOPs for the given sequence length.
     param_count: int = 0  # Number of learnable parameters
     
     # Hardware requirements
@@ -172,6 +173,7 @@ def make_mvm_node(
     name: str,
     in_features: int,
     out_features: int,
+    seq_len: int = 1,
     noise: Optional[NoiseSpec] = None,
     **kwargs,
 ) -> AnalogNode:
@@ -183,7 +185,8 @@ def make_mvm_node(
         input_shape=(in_features,),
         output_shape=(out_features,),
         weight_shape=(in_features, out_features),
-        flops=2 * in_features * out_features,  # multiply + accumulate
+        seq_len=seq_len,
+        flops=seq_len * 2 * in_features * out_features,  # multiply + accumulate
         param_count=in_features * out_features,
         noise=noise or NoiseSpec(kind="adc", sigma=1/256), # 8-bit ADC LSB noise
         **kwargs,
@@ -194,6 +197,7 @@ def make_norm_node(
     name: str,
     dim: int,
     norm_type: str = "layer_norm",
+    seq_len: int = 1,
     **kwargs,
 ) -> AnalogNode:
     """Create a normalization node (LayerNorm, GroupNorm, RMSNorm)."""
@@ -208,7 +212,8 @@ def make_norm_node(
         domain=Domain.DIGITAL,
         input_shape=(dim,),
         output_shape=(dim,),
-        flops=5 * dim,  # mean + var + sqrt + scale + shift
+        seq_len=seq_len,
+        flops=seq_len * 5 * dim,  # mean + var + sqrt + scale + shift
         param_count=2 * dim,  # gamma + beta
         **kwargs,
     )
@@ -218,6 +223,7 @@ def make_activation_node(
     name: str,
     dim: int,
     activation: str = "silu",
+    seq_len: int = 1,
     **kwargs,
 ) -> AnalogNode:
     """Create an activation function node."""
@@ -237,7 +243,8 @@ def make_activation_node(
         domain=domain,
         input_shape=(dim,),
         output_shape=(dim,),
-        flops=dim,  # ~1 op per element
+        seq_len=seq_len,
+        flops=seq_len * dim,  # ~1 op per element
         **kwargs,
     )
 
@@ -246,6 +253,7 @@ def make_integration_node(
     name: str,
     state_dim: int,
     time_constant: float = 1e-3,
+    seq_len: int = 1,
     noise: Optional[NoiseSpec] = None,
     **kwargs,
 ) -> AnalogNode:
@@ -256,7 +264,8 @@ def make_integration_node(
         domain=Domain.ANALOG,
         input_shape=(state_dim,),
         output_shape=(state_dim,),
-        flops=2 * state_dim,  # multiply + accumulate per state variable
+        seq_len=seq_len,
+        flops=seq_len * 2 * state_dim,  # multiply + accumulate per state variable
         metadata={"time_constant": time_constant},
         noise=noise or NoiseSpec(kind="thermal", sigma=1e-4, bandwidth_hz=250e3),
         **kwargs,
@@ -267,6 +276,7 @@ def make_noise_node(
     name: str,
     dim: int,
     noise_type: str = "gaussian",
+    seq_len: int = 1,
     noise: Optional[NoiseSpec] = None,
     **kwargs,
 ) -> AnalogNode:
@@ -277,7 +287,8 @@ def make_noise_node(
         domain=Domain.ANALOG,
         input_shape=(dim,),
         output_shape=(dim,),
-        flops=dim,
+        seq_len=seq_len,
+        flops=seq_len * dim,
         metadata={"noise_type": noise_type},
         noise=noise or NoiseSpec(kind="shot", sigma=1e-3),
         **kwargs,
@@ -287,6 +298,7 @@ def make_noise_node(
 def make_batch_norm_node(
     name: str,
     num_features: int,
+    seq_len: int = 1,
     **kwargs,
 ) -> AnalogNode:
     """Create a batch normalization node."""
@@ -296,7 +308,8 @@ def make_batch_norm_node(
         domain=Domain.DIGITAL,
         input_shape=(num_features,),
         output_shape=(num_features,),
-        flops=5 * num_features,  # mean + var + sqrt + scale + shift
+        seq_len=seq_len,
+        flops=seq_len * 5 * num_features,  # mean + var + sqrt + scale + shift
         param_count=2 * num_features,  # gamma + beta
         **kwargs,
     )
@@ -306,6 +319,7 @@ def make_max_pool_node(
     name: str,
     kernel_size: int,
     input_shape: tuple[int, ...],
+    seq_len: int = 1,
     **kwargs,
 ) -> AnalogNode:
     """Create a max pooling node."""
@@ -315,7 +329,8 @@ def make_max_pool_node(
         domain=Domain.DIGITAL,
         input_shape=input_shape,
         output_shape=input_shape,  # Simplified: same shape, actual shape depends on stride/padding
-        flops=input_shape[0] * input_shape[1] * input_shape[2],  # ~1 compare per element
+        seq_len=seq_len,
+        flops=seq_len * input_shape[0] * input_shape[1] * input_shape[2],  # ~1 compare per element
         param_count=0,
         metadata={"kernel_size": kernel_size},
         **kwargs,
@@ -326,6 +341,7 @@ def make_dropout_node(
     name: str,
     dim: int,
     dropout_rate: float = 0.1,
+    seq_len: int = 1,
     **kwargs,
 ) -> AnalogNode:
     """Create a dropout node (training-only, zero-compute at inference)."""
@@ -335,6 +351,7 @@ def make_dropout_node(
         domain=Domain.DIGITAL,
         input_shape=(dim,),
         output_shape=(dim,),
+        seq_len=seq_len,
         flops=0,  # Zero-compute at inference (training-only stochastic masking)
         param_count=0,
         metadata={"dropout_rate": dropout_rate},

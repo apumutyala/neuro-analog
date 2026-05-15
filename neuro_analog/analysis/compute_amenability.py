@@ -18,7 +18,7 @@ import sys
 _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from neuro_analog.ir.types import AnalogAmenabilityProfile, ArchitectureFamily
+from neuro_analog.ir.types import AnalogAmenabilityProfile, ArchitectureFamily, DynamicsProfile
 from neuro_analog.ir.energy_model import HardwareProfile, compute_amenability_score
 from neuro_analog.analysis.design_heuristics import classify_failure_mode, print_heuristic_report, get_design_recommendations
 
@@ -58,6 +58,69 @@ def extract_sigma_10pct(sweep_result: dict) -> float:
     return sweep_result.get("degradation_threshold_10pct", 0.0)
 
 
+def _load_profile_from_json(profile_path: Path) -> AnalogAmenabilityProfile:
+    """Load an AnalogAmenabilityProfile from a real IR/profile JSON file."""
+    if not profile_path.exists():
+        raise FileNotFoundError(f"IR/profile JSON required but not found: {profile_path}")
+
+    with open(profile_path, "r") as f:
+        data = json.load(f)
+
+    required = [
+        "architecture",
+        "model_name",
+        "model_params",
+        "analog_flop_fraction",
+        "digital_flop_fraction",
+        "hybrid_flop_fraction",
+        "da_boundary_count",
+        "layer_count",
+        "min_weight_precision_bits",
+    ]
+    missing = [key for key in required if key not in data]
+    if missing:
+        raise ValueError(
+            f"Profile {profile_path} is missing required real-profile fields: {missing}"
+        )
+
+    dynamics_data = data.get("dynamics") or {}
+    dynamics = DynamicsProfile(
+        has_dynamics=dynamics_data.get("has_dynamics", False),
+        dynamics_type=dynamics_data.get("dynamics_type", ""),
+        time_constant_spread=dynamics_data.get("time_constant_spread"),
+        state_dimension=dynamics_data.get("state_dimension"),
+        beta_dynamic_range=dynamics_data.get("beta_dynamic_range"),
+        num_diffusion_steps=dynamics_data.get("num_diffusion_steps"),
+        is_stochastic=dynamics_data.get("is_stochastic", False),
+        lipschitz_constant=dynamics_data.get("lipschitz_constant"),
+        flow_straightness=dynamics_data.get("flow_straightness"),
+        num_function_evaluations=dynamics_data.get("num_function_evaluations"),
+        stiffness_ratio=dynamics_data.get("stiffness_ratio"),
+    )
+
+    return AnalogAmenabilityProfile(
+        architecture=ArchitectureFamily(data["architecture"]),
+        model_name=data["model_name"],
+        model_params=int(data["model_params"]),
+        analog_flop_fraction=float(data["analog_flop_fraction"]),
+        digital_flop_fraction=float(data["digital_flop_fraction"]),
+        hybrid_flop_fraction=float(data["hybrid_flop_fraction"]),
+        da_boundary_count=int(data["da_boundary_count"]),
+        da_boundary_count_per_step=int(data.get("da_boundary_count_per_step", 0)),
+        crossbar_tiles_needed=int(data.get("crossbar_tiles_needed", 0)),
+        total_analog_area_mm2=float(data.get("total_analog_area_mm2", 0.0)),
+        total_digital_area_mm2=float(data.get("total_digital_area_mm2", 0.0)),
+        analog_power_mW=float(data.get("analog_power_mW", 0.0)),
+        digital_power_mW=float(data.get("digital_power_mW", 0.0)),
+        converter_power_mW=float(data.get("converter_power_mW", 0.0)),
+        dynamics=dynamics,
+        min_weight_precision_bits=int(data["min_weight_precision_bits"]),
+        min_activation_precision_bits=int(data.get("min_activation_precision_bits", 8)),
+        layer_count=int(data["layer_count"]),
+        sigma_10pct=float(data.get("sigma_10pct", 0.0)),
+    )
+
+
 def compute_amenability_for_architecture(
     arch_name: str,
     sweep_result: dict,
@@ -84,27 +147,13 @@ def compute_amenability_for_architecture(
     # Extract sigma_10pct from sweep results
     sigma_10pct = extract_sigma_10pct(sweep_result)
     
-    # Load IR profile if available
-    ir_profile = None
-    if profile_path is not None and profile_path.exists():
-        with open(profile_path, "r") as f:
-            ir_data = json.load(f)
-        # Would need full deserialization - for now use sweep data only
-    
-    # Create minimal profile with available data
-    # In practice, this would be loaded from IR analysis
-    profile = AnalogAmenabilityProfile(
-        architecture=ArchitectureFamily.TRANSFORMER,  # Placeholder
-        model_name=arch_name,
-        model_params=0,  # Would come from IR
-        analog_flop_fraction=0.5,  # Placeholder - would come from IR
-        digital_flop_fraction=0.5,
-        hybrid_flop_fraction=0.0,
-        da_boundary_count=10,  # Placeholder - would come from IR
-        layer_count=10,  # Placeholder - would come from IR
-        sigma_10pct=sigma_10pct,
-        min_weight_precision_bits=8,  # Placeholder
-    )
+    if profile_path is None:
+        raise ValueError(
+            f"Real IR/profile JSON is required for {arch_name}; refusing to use placeholder metrics"
+        )
+
+    profile = _load_profile_from_json(profile_path)
+    profile.sigma_10pct = sigma_10pct
     
     # Compute amenability score
     profile.amenability_score = compute_amenability_score(profile)
@@ -147,16 +196,18 @@ def compute_amenability_for_all(
     """
     results = load_sweep_results(results_dir)
     amenability_data = {}
+
+    if profile_dir is None:
+        raise ValueError("profile_dir is required; placeholder amenability profiles are not allowed")
+    if not profile_dir.exists():
+        raise FileNotFoundError(f"Profile directory not found: {profile_dir}")
     
     for arch_name, sweep_result in results.items():
         # Look for corresponding IR profile
-        profile_path = None
-        if profile_dir is not None:
-            profile_path = profile_dir / f"{arch_name}_*.json"
-            # Find matching profile if exists
-            matching = list(profile_dir.glob(f"{arch_name}_*.json"))
-            if matching:
-                profile_path = matching[0]
+        matching = list(profile_dir.glob(f"{arch_name}_profile*.json")) or list(profile_dir.glob(f"{arch_name}_*.json"))
+        if not matching:
+            raise FileNotFoundError(f"No real profile JSON found for {arch_name} in {profile_dir}")
+        profile_path = matching[0]
         
         # Compute amenability
         amenability_data[arch_name] = compute_amenability_for_architecture(
@@ -254,6 +305,10 @@ def main():
     if not results_dir.exists():
         print(f"Error: Results directory not found: {results_dir}")
         return
+    if profile_dir is None:
+        raise SystemExit("Error: --profile-dir is required; placeholder amenability metrics are not allowed")
+    if not profile_dir.exists():
+        raise SystemExit(f"Error: Profile directory not found: {profile_dir}")
     
     print(f"Loading sweep results from: {results_dir}")
     
@@ -265,9 +320,12 @@ def main():
             return
         
         sweep_result = results[args.arch]
+        matching = list(profile_dir.glob(f"{args.arch}_profile*.json")) or list(profile_dir.glob(f"{args.arch}_*.json"))
+        if not matching:
+            raise SystemExit(f"Error: No real profile JSON found for '{args.arch}' in {profile_dir}")
         amenability_data = {
             args.arch: compute_amenability_for_architecture(
-                args.arch, sweep_result, None, hardware_profile_config
+                args.arch, sweep_result, matching[0], hardware_profile_config
             )
         }
     else:

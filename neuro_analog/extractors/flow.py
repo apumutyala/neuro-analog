@@ -172,95 +172,95 @@ class FLUXExtractor(BaseExtractor):
         seq_len_sq = seq_len * seq_len
         
         # Patch embedding
-        graph.add_node(make_mvm_node("patch_embed", self.in_channels, dim))  # in_channels → dim
+        graph.add_node(make_mvm_node("patch_embed", self.in_channels, dim, seq_len=seq_len))  # in_channels → dim
         
         # ── Double-stream blocks (×19) ──
         for i in range(19):
             prefix = f"double_stream.{i}"
             
             # Image stream
-            graph.add_node(make_norm_node(f"{prefix}.img_norm", dim, "layer_norm"))
-            graph.add_node(make_mvm_node(f"{prefix}.img_qkv", dim, 3 * dim))
-            graph.add_node(make_mvm_node(f"{prefix}.img_mlp1", dim, mlp_dim))
-            graph.add_node(make_activation_node(f"{prefix}.img_gelu", mlp_dim, "gelu"))
-            graph.add_node(make_mvm_node(f"{prefix}.img_mlp2", mlp_dim, dim))
+            graph.add_node(make_norm_node(f"{prefix}.img_norm", dim, "layer_norm", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.img_qkv", dim, 3 * dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.img_mlp1", dim, mlp_dim, seq_len=seq_len))
+            graph.add_node(make_activation_node(f"{prefix}.img_gelu", mlp_dim, "gelu", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.img_mlp2", mlp_dim, dim, seq_len=seq_len))
             
             # Text stream (same structure, different weights)
-            graph.add_node(make_norm_node(f"{prefix}.txt_norm", dim, "layer_norm"))
-            graph.add_node(make_mvm_node(f"{prefix}.txt_qkv", dim, 3 * dim))
-            graph.add_node(make_mvm_node(f"{prefix}.txt_mlp1", dim, mlp_dim))
-            graph.add_node(make_activation_node(f"{prefix}.txt_gelu", mlp_dim, "gelu"))
-            graph.add_node(make_mvm_node(f"{prefix}.txt_mlp2", mlp_dim, dim))
+            graph.add_node(make_norm_node(f"{prefix}.txt_norm", dim, "layer_norm", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.txt_qkv", dim, 3 * dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.txt_mlp1", dim, mlp_dim, seq_len=seq_len))
+            graph.add_node(make_activation_node(f"{prefix}.txt_gelu", mlp_dim, "gelu", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.txt_mlp2", mlp_dim, dim, seq_len=seq_len))
             
             # Joint attention (concatenated Q, K, V across streams)
             graph.add_node(AnalogNode(
                 name=f"{prefix}.joint_attn_score", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-                flops=seq_len_sq * heads * head_dim,
+                seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.joint_softmax", op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-                flops=seq_len_sq * heads,
+                seq_len=seq_len, flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.joint_attn_value", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-                flops=seq_len_sq * heads * head_dim,
+                seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
             ))
             
             # Output projections
-            graph.add_node(make_mvm_node(f"{prefix}.img_out_proj", dim, dim))
-            graph.add_node(make_mvm_node(f"{prefix}.txt_out_proj", dim, dim))
+            graph.add_node(make_mvm_node(f"{prefix}.img_out_proj", dim, dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.txt_out_proj", dim, dim, seq_len=seq_len))
             
             # AdaLN modulation (digital)
             graph.add_node(AnalogNode(
                 name=f"{prefix}.adaln", op_type=OpType.ADALN,
                 domain=Domain.DIGITAL,
                 input_shape=(dim,), output_shape=(6 * dim,),
-                flops=dim,
+                seq_len=seq_len, flops=seq_len * (dim),
             ))
             
             # Residuals
             graph.add_node(AnalogNode(
                 name=f"{prefix}.img_residual", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), seq_len=seq_len, flops=seq_len * (dim),
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.txt_residual", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), seq_len=seq_len, flops=seq_len * (dim),
             ))
         
         # ── Single-stream blocks (×38) ──
         for i in range(38):
             prefix = f"single_stream.{i}"
-            graph.add_node(make_norm_node(f"{prefix}.norm", dim, "layer_norm"))
-            graph.add_node(make_mvm_node(f"{prefix}.qkv", dim, 3 * dim))
+            graph.add_node(make_norm_node(f"{prefix}.norm", dim, "layer_norm", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.qkv", dim, 3 * dim, seq_len=seq_len))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL, input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-                flops=seq_len_sq * heads * head_dim,
+                seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-                flops=seq_len_sq * heads,
+                seq_len=seq_len, flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-                flops=seq_len_sq * heads * head_dim,
+                seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
             ))
-            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
-            graph.add_node(make_mvm_node(f"{prefix}.mlp1", dim, mlp_dim))
-            graph.add_node(make_activation_node(f"{prefix}.gelu", mlp_dim, "gelu"))
-            graph.add_node(make_mvm_node(f"{prefix}.mlp2", mlp_dim, dim))
+            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.mlp1", dim, mlp_dim, seq_len=seq_len))
+            graph.add_node(make_activation_node(f"{prefix}.gelu", mlp_dim, "gelu", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.mlp2", mlp_dim, dim, seq_len=seq_len))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.residual", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), seq_len=seq_len, flops=seq_len * (dim),
             ))
         
         # ── ODE integration step (Euler) ──
@@ -270,7 +270,7 @@ class FLUXExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(self.in_channels, self.img_size, self.img_size),
             output_shape=(self.in_channels, self.img_size, self.img_size),
-            flops=spatial_flops,
+            seq_len=seq_len, flops=seq_len * (spatial_flops),
             metadata={"description": "Δt · v_θ via programmable gain amplifier"},
         ))
         graph.add_node(AnalogNode(
@@ -278,7 +278,7 @@ class FLUXExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(self.in_channels, self.img_size, self.img_size),
             output_shape=(self.in_channels, self.img_size, self.img_size),
-            flops=spatial_flops,
+            seq_len=seq_len, flops=seq_len * (spatial_flops),
             metadata={"description": "x_{t+Δt} = x_t + Δt·v_θ via capacitor integration"},
         ))
 

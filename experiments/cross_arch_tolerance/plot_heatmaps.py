@@ -62,8 +62,61 @@ def main():
     flux.model = None
     graphs_to_plot.append(("flow_flux", flux.build_graph()))
     
-    # 7. SSM (Mamba)
-    print("Building SSM (Mamba) graph... (requires HF download, skipping to avoid hang)")
+    # 7. SSM (Mamba / S4D)
+    print("Building SSM graph...")
+    try:
+        from neuro_analog.extractors.ssm import MambaExtractor
+        ssm_ext = MambaExtractor("state-spaces/mamba-130m", device="cpu")
+        ssm_ext.load_model()
+        graphs_to_plot.append(("ssm", ssm_ext.build_graph()))
+    except Exception as e:
+        print(f"  HF Mamba load failed ({e}); building pilot S4D graph instead.")
+        from experiments.cross_arch_tolerance.models import ssm as ssm_module
+        from neuro_analog.ir import AnalogGraph, AnalogNode, OpType, Domain, ArchitectureFamily
+        import torch.nn as nn
+        pilot = ssm_module.create_model()
+        graph = AnalogGraph(
+            name="ssm_pilot",
+            family=ArchitectureFamily.SSM,
+            model_params=sum(p.numel() for p in pilot.parameters()),
+        )
+        prev_id = None
+        for name, mod in pilot.named_modules():
+            if mod is pilot:
+                continue
+            node = None
+            if isinstance(mod, nn.Linear):
+                node = AnalogNode(
+                    name=name,
+                    op_type=OpType.MVM,
+                    domain=Domain.ANALOG,
+                    input_shape=(mod.in_features,),
+                    output_shape=(mod.out_features,),
+                    weight_shape=(mod.in_features, mod.out_features),
+                    seq_len=64,
+                    flops=64 * 2 * mod.in_features * mod.out_features,
+                    param_count=sum(p.numel() for p in mod.parameters()),
+                )
+            elif isinstance(mod, nn.Embedding):
+                node = AnalogNode(
+                    name=name,
+                    op_type=OpType.EMBEDDING,
+                    domain=Domain.DIGITAL,
+                    input_shape=(mod.num_embeddings,),
+                    output_shape=(mod.embedding_dim,),
+                    seq_len=64,
+                    flops=0,
+                    param_count=sum(p.numel() for p in mod.parameters()),
+                )
+            elif list(mod.children()):
+                # Container (Sequential, _S4DLayer, etc.) — skip, children are enumerated
+                continue
+            if node is not None:
+                nid = graph.add_node(node)
+                if prev_id is not None:
+                    graph.add_edge(prev_id, nid)
+                prev_id = nid
+        graphs_to_plot.append(("ssm", graph))
 
     for name, graph in graphs_to_plot:
         if graph is None:

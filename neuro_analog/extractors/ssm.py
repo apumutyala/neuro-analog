@@ -404,6 +404,7 @@ class MambaExtractor(BaseExtractor):
         weight_stats = self.extract_selective_mechanism_stats()
 
         # ── 2. Read architecture config ───────────────────────────────────────
+        seq_len = self._get_seq_len()
         config = self._get_config()
         D = config.get("d_model", 768)
         N = config.get("d_state", 16)
@@ -489,7 +490,7 @@ class MambaExtractor(BaseExtractor):
             # Weight stats may not be in selective_mechanism_stats (in_proj is
             # not in the selective list), so we fall back to defaults here.
             graph.add_node(make_mvm_node(
-                f"{prefix}.in_proj", D, 2 * D_inner,
+                f"{prefix}.in_proj", D, 2 * D_inner, seq_len=seq_len
             ))
 
             # ── Conv1D: short FIR on x branch ─────────────────────────────────
@@ -500,7 +501,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.conv1d", op_type=OpType.ANALOG_FIR,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner,), output_shape=(D_inner,),
-                flops=4 * D_inner,  # kernel_size=4 taps × D_inner channels
+                seq_len=seq_len,
+                flops=seq_len * 4 * D_inner,  # kernel_size=4 taps × D_inner channels
                 param_count=4 * D_inner,
             ))
 
@@ -508,12 +510,12 @@ class MambaExtractor(BaseExtractor):
             # Applied after conv1d to the x input.  SiLU = x·σ(x) requires
             # division-like nonlinearity, kept digital.  (Could be approximated
             # piecewise in analog at quality cost — see PIECEWISE_SILU.)
-            graph.add_node(make_activation_node(f"{prefix}.silu_x", D_inner, "silu"))
+            graph.add_node(make_activation_node(f"{prefix}.silu_x", D_inner, "silu", seq_len=seq_len))
 
             # ── SiLU on z branch (gating) ─────────────────────────────────────
             # The z branch is gated through SiLU and then multiplied element-wise
             # with the SSM output y.  The gate multiply itself is analog.
-            graph.add_node(make_activation_node(f"{prefix}.silu_z", D_inner, "silu"))
+            graph.add_node(make_activation_node(f"{prefix}.silu_z", D_inner, "silu", seq_len=seq_len))
 
             # ── x_proj: D_inner → 2*N  (compute B[t] and C[t]) ───────────────
             # This is the heart of the selective mechanism: a linear projection
@@ -523,6 +525,7 @@ class MambaExtractor(BaseExtractor):
             # this is different from a plain MVM and is why Mamba is time-varying.
             graph.add_node(make_mvm_node(
                 f"{prefix}.x_proj", D_inner, 2 * N,
+                seq_len=seq_len,
                 precision=_make_precision("x_proj"),
             ))
 
@@ -534,6 +537,7 @@ class MambaExtractor(BaseExtractor):
             # the measured dynamic range demands >8 bits.
             graph.add_node(make_mvm_node(
                 f"{prefix}.dt_proj", D_inner, D_inner,
+                seq_len=seq_len,
                 precision=_make_precision("dt_proj"),
             ))
 
@@ -545,7 +549,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.softplus", op_type=OpType.SOFTPLUS,
                 domain=Domain.DIGITAL,
                 input_shape=(D_inner,), output_shape=(D_inner,),
-                flops=D_inner,
+                seq_len=seq_len,
+                flops=seq_len * D_inner,
             ))
 
             # ── State recurrence: h = exp(Δ·A)·h + Δ·B·u  — ANALOG ───────────
@@ -568,7 +573,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.state_decay", op_type=OpType.DECAY,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner, N), output_shape=(D_inner, N),
-                flops=D_inner * N,  # element-wise exp(Δ·A)·h
+                seq_len=seq_len,
+                flops=seq_len * D_inner * N,  # element-wise exp(Δ·A)·h
                 metadata={
                     "description": "RC decay: exp(Δ·A)·h",
                     "n_independent_odes": D_inner,
@@ -579,7 +585,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.state_accumulate", op_type=OpType.ACCUMULATION,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner, N), output_shape=(D_inner, N),
-                flops=D_inner * N,  # Δ·B·u + decay output
+                seq_len=seq_len,
+                flops=seq_len * D_inner * N,  # Δ·B·u + decay output
                 metadata={"description": "Current sum: Δ·B·u + decayed state"},
             ))
 
@@ -592,7 +599,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.output_dot", op_type=OpType.MVM,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner, N), output_shape=(D_inner,),
-                flops=2 * D_inner * N,  # multiply + accumulate
+                seq_len=seq_len,
+                flops=seq_len * 2 * D_inner * N,  # multiply + accumulate
             ))
 
             # ── Element-wise gate: y * silu(z)  — ANALOG multiplier ───────────
@@ -603,13 +611,15 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.gate_mul", op_type=OpType.ELEMENTWISE_MUL,
                 domain=Domain.ANALOG,
                 input_shape=(D_inner,), output_shape=(D_inner,),
-                flops=D_inner,
+                seq_len=seq_len,
+                flops=seq_len * D_inner,
             ))
 
             # ── out_proj: D_inner → D ─────────────────────────────────────────
             # Projects the gated output back to the residual stream dimension.
             graph.add_node(make_mvm_node(
                 f"{prefix}.out_proj", D_inner, D,
+                seq_len=seq_len,
                 precision=_make_precision("out_proj"),
             ))
 
@@ -620,7 +630,8 @@ class MambaExtractor(BaseExtractor):
                 name=f"{prefix}.residual", op_type=OpType.SKIP_CONNECTION,
                 domain=Domain.ANALOG,
                 input_shape=(D,), output_shape=(D,),
-                flops=D,
+                seq_len=seq_len,
+                flops=seq_len * D,
             ))
 
             # ── Wire edges (linear chain) ──────────────────────────────────────

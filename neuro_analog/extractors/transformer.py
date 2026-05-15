@@ -174,27 +174,27 @@ class TransformerExtractor(BaseExtractor):
         seq_len = self._get_seq_len()
 
         # Q, K, V projections — ANALOG: static weight MVMs
-        graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim))
-        graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim))
-        graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim))
+        graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim, seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim, seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim, seq_len=seq_len))
 
         if self.use_favor_plus:
             # FAVOR+ kernel approximation — static random projection matrices
             # φ(Q) = exp(Q·W_r^T) / √m for random W_r ~ N(0,1/d)
             # W_r is STATIC → programmable crossbar
             graph.add_node(make_mvm_node(
-                f"{prefix}.favor_q_proj", dim, self.num_favor_features,
+                f"{prefix}.favor_q_proj", dim, self.num_favor_features, seq_len=seq_len
             ))
             graph.add_node(make_mvm_node(
-                f"{prefix}.favor_k_proj", dim, self.num_favor_features,
+                f"{prefix}.favor_k_proj", dim, self.num_favor_features, seq_len=seq_len
             ))
             # φ(K)^T · V — static outer product → crossbar
             graph.add_node(make_mvm_node(
-                f"{prefix}.favor_kv", self.num_favor_features, dim,
+                f"{prefix}.favor_kv", self.num_favor_features, dim, seq_len=seq_len
             ))
             # φ(Q) · (φ(K)^T · V) — final attention via MVM
             graph.add_node(make_mvm_node(
-                f"{prefix}.favor_attn", dim, dim,
+                f"{prefix}.favor_attn", dim, dim, seq_len=seq_len
             ))
             # Replace softmax with HYBRID kernel attention
             graph.add_node(AnalogNode(
@@ -202,7 +202,8 @@ class TransformerExtractor(BaseExtractor):
                 op_type=OpType.KERNEL_ATTENTION,
                 domain=Domain.HYBRID,
                 input_shape=(dim,), output_shape=(dim,),
-                flops=2 * dim * self.num_favor_features,
+                seq_len=seq_len,
+                flops=seq_len * 2 * dim * self.num_favor_features,
                 metadata={
                     "description": "FAVOR+ kernel attention (IBM NMI 2024)",
                     "num_features": self.num_favor_features,
@@ -219,6 +220,7 @@ class TransformerExtractor(BaseExtractor):
                 op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
+                seq_len=seq_len,
                 flops=seq_len_sq * heads * head_dim,
                 metadata={"description": "Q·K^T — data-dependent, can't be static crossbar"},
             ))
@@ -227,6 +229,7 @@ class TransformerExtractor(BaseExtractor):
                 op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
+                seq_len=seq_len,
                 flops=seq_len_sq * heads,
             ))
             graph.add_node(AnalogNode(
@@ -234,23 +237,26 @@ class TransformerExtractor(BaseExtractor):
                 op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
+                seq_len=seq_len,
                 flops=seq_len_sq * heads * head_dim,
                 metadata={"description": "Attn·V — data-dependent"},
             ))
 
-        graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
+        graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim, seq_len=seq_len))
 
     def _add_ffn_block(self, graph: AnalogGraph, prefix: str, dim: int, activation: str = "gelu"):
         """Add FFN: linear → activation → linear."""
         ffn_dim = 4 * dim
-        graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, ffn_dim))
-        graph.add_node(make_activation_node(f"{prefix}.ffn_act", ffn_dim, activation))
-        graph.add_node(make_mvm_node(f"{prefix}.ffn2", ffn_dim, dim))
+        seq_len = self._get_seq_len()
+        graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, ffn_dim, seq_len=seq_len))
+        graph.add_node(make_activation_node(f"{prefix}.ffn_act", ffn_dim, activation, seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.ffn2", ffn_dim, dim, seq_len=seq_len))
         graph.add_node(AnalogNode(
             name=f"{prefix}.residual",
             op_type=OpType.SKIP_CONNECTION,
             domain=Domain.ANALOG,
-            input_shape=(dim,), output_shape=(dim,), flops=dim,
+            input_shape=(dim,), output_shape=(dim,), 
+            seq_len=seq_len, flops=seq_len * dim,
         ))
         graph.add_edge(f"{prefix}.ffn1", f"{prefix}.ffn_act")
         graph.add_edge(f"{prefix}.ffn_act", f"{prefix}.ffn2")
@@ -276,12 +282,14 @@ class TransformerExtractor(BaseExtractor):
         )
 
         # Embedding
+        seq_len = self._get_seq_len()
         if hasattr(self.model, "embed_tokens") or hasattr(self.model, "wte"):
             graph.add_node(AnalogNode(
                 name="embedding",
                 op_type=OpType.EMBEDDING,
                 domain=Domain.DIGITAL,
-                input_shape=(1,), output_shape=(dim,), flops=0,
+                input_shape=(1,), output_shape=(dim,), 
+                seq_len=seq_len, flops=0,
                 metadata={"description": "Token embedding lookup"},
             ))
 
@@ -298,7 +306,7 @@ class TransformerExtractor(BaseExtractor):
 
             # Pre-norm (RMSNorm in LLaMA, LayerNorm in GPT-2)
             norm_type = "rms_norm" if "llama" in self.model_name.lower() else "layer_norm"
-            graph.add_node(make_norm_node(f"{prefix}.pre_norm", dim, norm_type))
+            graph.add_node(make_norm_node(f"{prefix}.pre_norm", dim, norm_type, seq_len=seq_len))
 
             # Attention block
             self._add_attention_block(graph, f"{prefix}.attn", dim, heads)
@@ -306,11 +314,12 @@ class TransformerExtractor(BaseExtractor):
                 name=f"{prefix}.attn_residual",
                 op_type=OpType.SKIP_CONNECTION,
                 domain=Domain.ANALOG,
-                input_shape=(dim,), output_shape=(dim,), flops=dim,
+                input_shape=(dim,), output_shape=(dim,), 
+                seq_len=seq_len, flops=seq_len * dim,
             ))
 
             # Post-attention norm
-            graph.add_node(make_norm_node(f"{prefix}.post_norm", dim, norm_type))
+            graph.add_node(make_norm_node(f"{prefix}.post_norm", dim, norm_type, seq_len=seq_len))
 
             # FFN
             self._add_ffn_block(graph, f"{prefix}.ffn", dim, activation)
@@ -356,12 +365,13 @@ class TransformerExtractor(BaseExtractor):
         heads: int = 12,
         model_name: str = "reference_transformer",
         use_favor_plus: bool = False,
+        seq_len: int | None = None,
     ) -> "TransformerExtractor":
         """Build a reference transformer without loading a pretrained model.
 
         Used for taxonomy comparison and testing.
         """
-        ext = cls(model_name=model_name, use_favor_plus=use_favor_plus)
+        ext = cls(model_name=model_name, use_favor_plus=use_favor_plus, seq_len=seq_len)
 
         # Build graph directly without a loaded model
         total_params = n_layers * (12 * dim * dim)  # Rough estimate
@@ -377,44 +387,48 @@ class TransformerExtractor(BaseExtractor):
 
         for i in range(n_layers):
             prefix = f"layer_{i}"
-            graph.add_node(make_norm_node(f"{prefix}.norm1", dim, "layer_norm"))
-            graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim))
-            graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim))
-            graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim))
+            graph.add_node(make_norm_node(f"{prefix}.norm1", dim, "layer_norm", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim, seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim, seq_len=seq_len))
 
             if use_favor_plus:
-                graph.add_node(make_mvm_node(f"{prefix}.favor_qk", dim, 256))
+                graph.add_node(make_mvm_node(f"{prefix}.favor_qk", dim, 256, seq_len=seq_len))
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.kernel_attn", op_type=OpType.KERNEL_ATTENTION,
                     domain=Domain.HYBRID,
-                    input_shape=(dim,), output_shape=(dim,), flops=2 * dim * 256,
+                    input_shape=(dim,), output_shape=(dim,), 
+                    seq_len=seq_len, flops=seq_len * 2 * dim * 256,
                 ))
             else:
                 head_dim = dim // heads
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
                     domain=Domain.DIGITAL, input_shape=(heads, -1, head_dim),
-                    output_shape=(heads, -1, -1), flops=seq_len_sq * heads * head_dim,
+                    output_shape=(heads, -1, -1), 
+                    seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
                 ))
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
                     domain=Domain.DIGITAL, input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-                    flops=seq_len_sq * heads,
+                    seq_len=seq_len, flops=seq_len_sq * heads,
                 ))
                 graph.add_node(AnalogNode(
                     name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
                     domain=Domain.DIGITAL, input_shape=(heads, -1, -1),
-                    output_shape=(heads, -1, head_dim), flops=seq_len_sq * heads * head_dim,
+                    output_shape=(heads, -1, head_dim), 
+                    seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
                 ))
 
-            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
-            graph.add_node(make_norm_node(f"{prefix}.norm2", dim, "layer_norm"))
-            graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, ffn_dim))
-            graph.add_node(make_activation_node(f"{prefix}.gelu", ffn_dim, "gelu"))
-            graph.add_node(make_mvm_node(f"{prefix}.ffn2", ffn_dim, dim))
+            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim, seq_len=seq_len))
+            graph.add_node(make_norm_node(f"{prefix}.norm2", dim, "layer_norm", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, ffn_dim, seq_len=seq_len))
+            graph.add_node(make_activation_node(f"{prefix}.gelu", ffn_dim, "gelu", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.ffn2", ffn_dim, dim, seq_len=seq_len))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.residual", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), 
+                seq_len=seq_len, flops=seq_len * dim,
             ))
 
         ext._graph = graph

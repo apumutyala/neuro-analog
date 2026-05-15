@@ -164,6 +164,7 @@ class DEQExtractor(BaseExtractor):
           - Output: ADC converts z* to digital for downstream use
           - The fixed-point loop itself: purely analog (0 boundaries inside)
         """
+        seq_len = self._get_seq_len()
         cfg = self.config
 
         # Total parameters in f_θ MLP
@@ -183,16 +184,16 @@ class DEQExtractor(BaseExtractor):
         )
 
         # z-state injection (crossbar MVM): W_z · z_k
-        graph.add_node(make_mvm_node("deq.W_z", cfg.z_dim, cfg.hidden_dim))
+        graph.add_node(make_mvm_node("deq.W_z", cfg.z_dim, cfg.hidden_dim, seq_len=seq_len))
 
         # x injection (crossbar MVM): W_x · x (additive to W_z output)
-        graph.add_node(make_mvm_node("deq.W_x", cfg.x_dim, cfg.hidden_dim))
+        graph.add_node(make_mvm_node("deq.W_x", cfg.x_dim, cfg.hidden_dim, seq_len=seq_len))
 
         # Activation: tanh (analog diff pair)
-        graph.add_node(make_activation_node("deq.act", cfg.hidden_dim, cfg.activation))
+        graph.add_node(make_activation_node("deq.act", cfg.hidden_dim, cfg.activation, seq_len=seq_len))
 
         # Output projection: W_out · h → z_{k+1}
-        graph.add_node(make_mvm_node("deq.W_out", cfg.hidden_dim, cfg.z_dim))
+        graph.add_node(make_mvm_node("deq.W_out", cfg.hidden_dim, cfg.z_dim, seq_len=seq_len))
 
         # Feedback node: z_{k+1} fed back to W_z input (analog feedback path)
         feedback_node = AnalogNode(
@@ -201,7 +202,7 @@ class DEQExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(cfg.z_dim,),
             output_shape=(cfg.z_dim,),
-            flops=2 * cfg.z_dim,  # multiply + accumulate per state variable
+            seq_len=seq_len, flops=seq_len * (2 * cfg.z_dim),  # multiply + accumulate per state variable
             metadata={
                 "description": "Analog state register: z held on capacitors between iterations",
                 "convergence_criterion": f"||z_{{k+1}} - z_k|| < {cfg.tol}",

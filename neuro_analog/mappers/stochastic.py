@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 import math
 
 from neuro_analog.ir import AnalogGraph, OpType, NoiseSpec
@@ -35,9 +36,9 @@ class StochasticMapper:
         
         for node in graph.nodes:
             if node.op_type == OpType.NOISE_INJECTION:
-                node.noise = shot_noise
+                node.noise = replace(shot_noise)
             elif node.op_type == OpType.SAMPLE:
-                node.noise = thermal_noise
+                node.noise = replace(thermal_noise)
             elif node.op_type == OpType.GIBBS_STEP:
                 # DTCA thermodynamic sampler: thermal noise is the computational resource.
                 # Appendix K (Jelinčič et al. 2025): τ_rng ≈ 100 ns RNG flip time.

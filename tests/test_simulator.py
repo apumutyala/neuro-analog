@@ -15,6 +15,7 @@ from neuro_analog.simulator.analog_linear import AnalogLinear, _K_B
 from neuro_analog.simulator.analog_activation import AnalogTanh, AnalogSigmoid, AnalogReLU
 from neuro_analog.simulator.analog_model import (
     analogize, resample_all_mismatch, set_all_noise, count_analog_vs_digital,
+    calibrate_analog_model,
 )
 from neuro_analog.simulator.sweep import SweepResult, mismatch_sweep, adc_sweep, ablation_sweep
 
@@ -379,3 +380,62 @@ class TestSweepResult:
         )
         d = result.to_dict()
         json.dumps(d)  # Must not raise
+
+    def test_digital_baseline_uses_original_model(self):
+        """Digital baseline is the untouched model; ideal analog is only diagnostic."""
+        model = nn.Sequential(nn.Linear(1, 1, bias=False), nn.Tanh())
+        with torch.no_grad():
+            model[0].weight.fill_(3.0)
+        x = torch.ones(1, 1)
+
+        def eval_fixed(m):
+            with torch.no_grad():
+                return float(m(x).item())
+
+        result = mismatch_sweep(
+            model,
+            eval_fixed,
+            sigma_values=[0.0],
+            n_trials=1,
+            n_adc_bits=32,
+            seed=123,
+        )
+        assert result.digital_baseline == pytest.approx(float(torch.tanh(torch.tensor(3.0)).item()), abs=1e-5)
+        assert result.ideal_analog_baseline == pytest.approx(0.95, abs=1e-5)
+        assert result.per_trial.shape == (1, 1)
+
+
+class TestCalibrationRunner:
+    def test_custom_runner_updates_refs_and_restores_noise_state(self):
+        class TwoArgModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(3, 2)
+
+            def forward(self, t, x):
+                return self.fc(x + t.unsqueeze(-1))
+
+        analog = analogize(TwoArgModel(), sigma_mismatch=0.05, n_adc_bits=8)
+        set_all_noise(analog, thermal=False, quantization=True, mismatch=False)
+        fc = analog.fc
+        before = (fc._use_thermal, fc._use_quantization, fc._use_mismatch)
+
+        x = torch.full((4, 3), 2.0)
+        t = torch.ones(4)
+        calibrate_analog_model(analog, calibration_runner=lambda m: m(t, x))
+
+        assert fc.v_ref_input > 1.0
+        assert fc.v_ref > 0.0
+        after = (fc._use_thermal, fc._use_quantization, fc._use_mismatch)
+        assert after == before
+
+
+class TestDEQAnalogization:
+    def test_spectral_norm_recurrent_layer_is_analogized(self):
+        from experiments.cross_arch_tolerance.models import deq
+
+        model = deq.create_model()
+        analog = analogize(model, sigma_mismatch=0.05, n_adc_bits=32)
+
+        assert isinstance(analog.W_z, AnalogLinear)
+        assert hasattr(analog.W_z, "delta")

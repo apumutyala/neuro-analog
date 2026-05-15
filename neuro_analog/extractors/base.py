@@ -17,6 +17,31 @@ class BaseExtractor(ABC):
         self._activation_specs: dict[str, PrecisionSpec] | None = None
         self.seq_len = seq_len  # Sequence length for FLOP calculations (None = use architecture default)
 
+    def _get_seq_len(self) -> int:
+        """Get sequence length for accurate per-sequence cost modeling.
+        
+        Order of precedence:
+        1. Explicit self.seq_len passed during initialization.
+        2. Inferred from model.config (e.g., max_position_embeddings, image_size).
+        3. Fallback to 1 with a warning.
+        """
+        if self.seq_len is not None:
+            return self.seq_len
+            
+        if self.model is not None and hasattr(self.model, "config"):
+            cfg = self.model.config
+            for attr in ("max_position_embeddings", "n_positions", "seq_length", "max_seq_len", "image_size"):
+                if hasattr(cfg, attr):
+                    val = getattr(cfg, attr)
+                    if isinstance(val, int) and val > 0:
+                        return val
+                        
+        import logging
+        log = logging.getLogger(__name__)
+        log.warning(f"Could not infer seq_len for {self.model_name}. Defaulting to 1. "
+                    "Pass seq_len explicitly to the extractor for accurate FLOP/latency counts.")
+        return 1
+
     @property
     @abstractmethod
     def family(self) -> ArchitectureFamily: ...

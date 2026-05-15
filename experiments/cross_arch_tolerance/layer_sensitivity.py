@@ -50,6 +50,7 @@ from neuro_analog.simulator import (
     analogize, resample_all_mismatch, set_all_noise,
     calibrate_analog_model, configure_analog_profile, AnalogLinear,
 )
+from sweep_all import _build_calibration_runner
 
 _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -64,7 +65,6 @@ _MODELS = [
 ]
 
 _SUBSTRATE_AWARE = {"diffusion", "neural_ode", "flow", "deq"}
-_GAUSSIAN_INPUT_MODELS = {"neural_ode", "diffusion", "flow"}
 
 _COLORS = {
     "neural_ode":  "#2ecc71",
@@ -113,14 +113,12 @@ def run_layer_sensitivity(name, module, sigma=0.05, n_trials=20, force=False):
 
     model = module.load_model(ckpt_path).to(_DEVICE)
 
-    gaussian_kwargs = {"v_ref_input": 3.3} if name in _GAUSSIAN_INPUT_MODELS else {}
-
     # Analogize at sigma=0 (noiseless structure, correct layer types)
-    analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=8, **gaussian_kwargs)
+    analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=8)
     configure_analog_profile(analog_model, "conservative")
 
     # Calibrate v_ref from real data if possible
-    if hasattr(module, "_get_data") and name not in _GAUSSIAN_INPUT_MODELS:
+    if hasattr(module, "_get_data"):
         data = module._get_data()
         if len(data) == 4:
             calib = data[0][:32].to(_DEVICE)
@@ -128,7 +126,8 @@ def run_layer_sensitivity(name, module, sigma=0.05, n_trials=20, force=False):
             calib = data[0][0][:32].to(_DEVICE)
         else:
             calib = data[0][:32].to(_DEVICE) if isinstance(data[0], torch.Tensor) else data[0][0][:32].to(_DEVICE)
-        calibrate_analog_model(analog_model, calib)
+        calib, calibration_runner, _ = _build_calibration_runner(name, module, calib, _DEVICE)
+        calibrate_analog_model(analog_model, calib, calibration_runner=calibration_runner)
 
     # Build eval_fn
     if name in _SUBSTRATE_AWARE:

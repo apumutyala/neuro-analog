@@ -1,0 +1,20 @@
+{
+  "architecture": "diffusion",
+  "family": "diffusion",
+  "digital_iterations": 10,
+  "analog_settling_time_constants": 1.0,
+  "speedup_settling_vs_digital": 10.0,
+  "energy_saving_ratio": 1000.0,
+  "digital_energy_per_iteration_pJ": 10.0,
+  "analog_energy_per_step_pJ": 0.1,
+  "speedup_notes": "Diffusion: 10 digital sampling steps \u2192 analog Langevin dynamics in 1 physical step. Speedup \u2248 10\u00d7. Thermal noise IS the sampler in analog (no RNG overhead).",
+  "metadata": {
+    "arch": "diffusion",
+    "analog_domain": "conservative",
+    "analog_substrate": "classic",
+    "seed": 20042,
+    "pilot_profile_path": "/workspace/NEW_ACTUAL_RUNS/5-14/945/experiments/cross_arch_tolerance/results/profiles/diffusion_profile.json",
+    "dynamics_diagnostics": {},
+    "calibration": "runner: diffusion(x_t,t), early/mid/late noised states"
+  }
+}

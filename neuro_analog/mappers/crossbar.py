@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from neuro_analog.ir import AnalogGraph, OpType, NoiseSpec
 from neuro_analog.ir.types import CrossbarSpec
 
@@ -25,4 +27,4 @@ class CrossbarMapper:
         
         for node in graph.nodes:
             if node.op_type == OpType.MVM:
-                node.noise = noise
+                node.noise = replace(noise)

@@ -21,46 +21,179 @@ from typing import Optional
 import yaml
 
 from .types import (
-    AnalogNode, AnalogAmenabilityProfile, DynamicsProfile, OpType, Domain,
+    AnalogAmenabilityProfile, DynamicsProfile, OpType, Domain,
     HardwareEstimate, CrossbarSpec, IntegratorSpec, ConverterSpec,
 )
+from .node import AnalogNode
 
 
 @dataclass
 class HardwareProfile:
     """Hardware specification for energy/latency estimation.
-    
+
     All energy values in picojoules (pJ), latency in nanoseconds (ns).
     Throughput in operations per second.
-    
-    Sources:
-    - Crossbar: IBM PCM arrays ~5 pJ/MAC (Nature Comp. Sci. 2024)
-    - ADC: 0.5-1 pJ/conversion at 1 MSPS (AIMC surveys)
-    - Digital MAC: 100-500 pJ/MAC (GPU/SRAM-IMC baselines)
+
+    Published silicon data sources:
+    - IBM HERMES PCM (Nature Electronics 2023, arXiv:2212.02872):
+      * 8-bit 1-phase (LP): 9.76 TOPS/W  -> 0.102 pJ/MAC (end-to-end)
+      * 8-bit 4-phase (HP): 2.48 TOPS/W -> 0.403 pJ/MAC (end-to-end)
+      * HERMES Core JSSC 2022: 10.5 TOPS/W -> 0.095 pJ/MAC
+      * MVM latency: 130 ns (O(1) parallel operation)
+      * Crossbar size: 256×256 typical
+    - imec/KU Leuven SRAM AIMC (ESSCIRC 2023, arXiv:2305.18335):
+      * 16nm DIMC 8b: 23.8 TOPS/W -> 0.042 pJ/MAC
+      * SRAM AIMC core (LP): ~1000 TOPS/W -> 0.001 pJ/MAC (core only)
+    - HKUST/ACCESS SRAM CIM (VLSI 2023): 137.5 TOPS/W -> 0.007 pJ/MAC
+    - Digital baseline: Modern 16nm accelerators achieve ~10 fJ/MAC (0.01 pJ/MAC)
+      Legacy GPU baseline: 100 pJ/MAC (conservative)
+    - ADC energy scaling: Exponential with resolution ~100 fJ for 5-bit, 2^(bits-5)
+    - DAC energy: ~15 fJ per conversion
     """
-    # Crossbar (analog MAC)
-    analog_mac_energy_pJ: float = 5.0  # Energy per MAC operation
-    analog_mac_throughput: float = 1e12  # MAC/s (1 TOPS)
-    
+    # Crossbar (analog MAC) - Updated to research-validated defaults
+    analog_mac_energy_pJ: float = 0.10  # Default: IBM HERMES end-to-end 8-bit PCM
+    analog_mac_throughput: float = 1e12  # MAC/s (1 TOPS) - legacy, prefer crossbar_read_latency_ns
+
     # Integrator (ODE/SDE state update)
     integrator_energy_pJ_per_state: float = 0.5  # Energy per state variable
     integrator_time_constant_s: float = 1e-3  # RC time constant
-    
+
     # ADC/DAC (domain conversion)
-    adc_energy_pJ: float = 0.8  # Energy per ADC conversion
-    adc_latency_ns: float = 1000.0  # Latency per conversion
-    dac_energy_pJ: float = 0.8  # Energy per DAC conversion
-    dac_latency_ns: float = 1000.0  # Latency per conversion
-    
-    # Digital baseline (GPU/SRAM-IMC)
-    digital_mac_energy_pJ: float = 100.0  # Energy per digital MAC
-    digital_mac_throughput: float = 1e11  # MAC/s (100 GOPS)
+    # When using end-to-end measured presets (e.g., ibm_hermes_*), these are
+    # zeroed by calibrate_from_reference(is_end_to_end=True) to avoid double counting.
+    # Research-validated values: ADC ~100 fJ for 5-bit with exponential scaling 2^(bits-5)
+    adc_energy_pJ: float = 0.10  # Per-element ADC conversion [pJ] - 100 fJ for 5-bit baseline
+    adc_latency_ns: float = 250.0  # IBM HERMES CCO-based ADC ~250 ns (300 ps/LSB @ 8b)
+    adc_resolution_bits: int = 8  # ADC resolution, affects energy (exponential scaling)
+    dac_energy_pJ: float = 0.015  # Per-element DAC conversion [pJ] - 15 fJ from research
+    dac_latency_ns: float = 100.0  # Latency per conversion
+
+    # Digital baseline - Updated to match modern 16nm accelerators
+    # Digital baseline — system-level comparison for analog/digital energy/latency
+    # Default 10.0 pJ/MAC matches modern edge NPU with on-chip SRAM (system-level).
+    # This is NOT a core-only digital MAC figure; core-only 16nm digital MAC is ~0.01 pJ,
+    # but system-level comparison must include memory access, control, and data movement.
+    # References:
+    #   - IBM HERMES PCM: 0.10 pJ/MAC end-to-end (Nature Electronics 2023)
+    #   - Edge NPU 8-bit: ~10 pJ/MAC system-level (SRAM + MAC + control)
+    #   - GPU+HBM: 100-1000 pJ/MAC system-level
+    digital_mac_energy_pJ: float = 10.0  # System-level digital MAC energy [pJ]
+    digital_mac_throughput: float = 1e11  # MAC/s (100 GOPS) - legacy
+    digital_mac_latency_ns: float = 1.0  # 1 ns per MAC (modern accelerators)
     digital_memory_access_pJ: float = 10.0  # Energy per memory access
-    
+
     # Thermodynamic sampling (EBM, DTM)
     thermodynamic_sample_energy_pJ: float = 0.35  # Energy per sampled bit (350 aJ)
     rng_latency_ns: float = 100.0  # RNG flip time
-    
+
+    # Sequence-aware and physical latency parameters
+    # Research-validated: MVM is O(1) parallel operation, typical 130ns from IBM HERMES
+    crossbar_read_latency_ns: float = 130.0  # Time per MVM operation (O(1) parallel)
+    use_tops_latency: bool = False  # If True, revert to MAC/throughput legacy latency model
+    integrator_settling_time_constants: float = 5.0  # Number of time constants for SSM integrator to settle
+    num_parallel_converters: int = 0  # 0 means fully parallel across hidden dim, >0 models limited ADC/DAC parallelization
+
+    # ── Calibration API ────────────────────────────────────────────────────
+
+    _PRESETS: dict[str, dict] = field(default_factory=lambda: {
+        "ibm_hermes_pcm_lp": {
+            "analog_mac_energy_pJ": 1.0 / 9.76,
+            "adc_energy_pJ": 0.0,
+            "dac_energy_pJ": 0.0,
+            "description": "IBM HERMES 64-core PCM, 8-bit 1-phase (low-precision), end-to-end",
+        },
+        "ibm_hermes_pcm_hp": {
+            "analog_mac_energy_pJ": 1.0 / 2.48,
+            "adc_energy_pJ": 0.0,
+            "dac_energy_pJ": 0.0,
+            "description": "IBM HERMES 64-core PCM, 8-bit 4-phase (high-precision), end-to-end",
+        },
+        "ibm_hermes_core": {
+            "analog_mac_energy_pJ": 1.0 / 10.5,
+            "adc_energy_pJ": 0.0,
+            "dac_energy_pJ": 0.0,
+            "description": "IBM HERMES Core 256x256 PCM, JSSC 2022, end-to-end",
+        },
+        "imec_dimc_8b": {
+            "analog_mac_energy_pJ": 1.0 / 23.8,
+            "adc_energy_pJ": 0.0,
+            "dac_energy_pJ": 0.0,
+            "description": "imec 16nm digital IMC (DIMC), 8-bit MAC, ESSCIRC 2023",
+        },
+        "hkust_sram_cim": {
+            "analog_mac_energy_pJ": 1.0 / 137.5,
+            "adc_energy_pJ": 0.0,
+            "dac_energy_pJ": 0.0,
+            "description": "HKUST/ACCESS SRAM CIM, 137.5 TOPS/W, VLSI 2023",
+        },
+        "digital_gpu_fp16": {
+            "digital_mac_energy_pJ": 100.0,
+            "description": "Conservative GPU FP16 baseline (100 pJ/MAC)",
+        },
+        "digital_edge_8b": {
+            "digital_mac_energy_pJ": 10.0,
+            "description": "Edge NPU 8-bit baseline (10 pJ/MAC)",
+        },
+    }, repr=False)
+
+    @classmethod
+    def from_preset(cls, preset_name: str) -> "HardwareProfile":
+        """Load a HardwareProfile from a named preset of published silicon data.
+
+        Args:
+            preset_name: One of the keys in _PRESETS (e.g., 'ibm_hermes_pcm_lp').
+
+        Returns:
+            HardwareProfile with calibrated constants.
+        """
+        inst = cls()
+        inst.load_preset(preset_name)
+        return inst
+
+    def load_preset(self, preset_name: str) -> None:
+        """Apply a named preset in-place."""
+        presets = self._PRESETS
+        if preset_name not in presets:
+            raise ValueError(
+                f"Unknown preset '{preset_name}'. Available: {list(presets.keys())}"
+            )
+        data = presets[preset_name].copy()
+        data.pop("description", None)
+        for k, v in data.items():
+            setattr(self, k, v)
+
+    def calibrate_from_reference(
+        self,
+        tops_per_w: float | None = None,
+        energy_pj_per_mac: float | None = None,
+        is_end_to_end: bool = True,
+    ) -> None:
+        """Set analog_mac_energy_pJ from a published TOPS/W or direct pJ/MAC figure.
+
+        Derivation: 1 TOPS = 1e12 ops/s. 1 W = 1 J/s.
+        Therefore 1 TOPS/W = 1e12 ops/J = 1 op / 1e-12 J = 1 pJ/op.
+        So energy_per_MAC [pJ] = 1 / TOPS_per_W.
+
+        Args:
+            tops_per_w: Published throughput per Watt (TOPS/W).
+            energy_pj_per_mac: Direct energy per MAC in picojoules.
+            is_end_to_end: If True, zero out adc_energy_pJ and dac_energy_pJ
+                to avoid double-counting converter energy already included in
+                the published figure.
+        """
+        if energy_pj_per_mac is not None:
+            self.analog_mac_energy_pJ = float(energy_pj_per_mac)
+        elif tops_per_w is not None:
+            if tops_per_w <= 0:
+                raise ValueError("tops_per_w must be positive")
+            self.analog_mac_energy_pJ = 1.0 / float(tops_per_w)
+        else:
+            raise ValueError("Provide either tops_per_w or energy_pj_per_mac")
+
+        if is_end_to_end:
+            self.adc_energy_pJ = 0.0
+            self.dac_energy_pJ = 0.0
+
     @classmethod
     def from_config(cls, config_path: str | Path) -> "HardwareProfile":
         """Load HardwareProfile from YAML config file.
@@ -104,6 +237,10 @@ class HardwareProfile:
                 "digital_memory_access_pJ": self.digital_memory_access_pJ,
                 "thermodynamic_sample_energy_pJ": self.thermodynamic_sample_energy_pJ,
                 "rng_latency_ns": self.rng_latency_ns,
+                "crossbar_read_latency_ns": self.crossbar_read_latency_ns,
+                "use_tops_latency": self.use_tops_latency,
+                "integrator_settling_time_constants": self.integrator_settling_time_constants,
+                "num_parallel_converters": self.num_parallel_converters,
             }, f, default_flow_style=False)
 
 
@@ -129,34 +266,38 @@ def estimate_node_cost(node: AnalogNode, profile: HardwareProfile) -> HardwareEs
             # Crossbar array MAC operations
             mac_count = node.flops // 2  # FLOPs = 2 * MACs (multiply + accumulate)
             energy_pJ = mac_count * profile.analog_mac_energy_pJ
-            latency_ns = mac_count / profile.analog_mac_throughput * 1e9  # Convert to ns
+            if profile.use_tops_latency:
+                latency_ns = mac_count / profile.analog_mac_throughput * 1e9  # Convert to ns
+            else:
+                latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         elif node.op_type in (OpType.INTEGRATION, OpType.DECAY):
             # RC integrator / decay circuit
-            state_dim = node.output_shape[0] if node.output_shape else node.flops
-            energy_pJ = state_dim * profile.integrator_energy_pJ_per_state
-            # Latency dominated by RC time constant
-            latency_ns = profile.integrator_time_constant_s * 1e9 * 5  # 5*tau for settling
+            # output_shape is per-token, volume is dim or dim * state_dim
+            state_dim = node.flops // (node.seq_len * 2) if node.flops > 0 else 1
+            energy_pJ = state_dim * node.seq_len * profile.integrator_energy_pJ_per_state
+            # Latency dominated by RC time constant (per sequence step)
+            latency_ns = node.seq_len * profile.integrator_time_constant_s * 1e9 * profile.integrator_settling_time_constants
             
         elif node.op_type == OpType.ACCUMULATION:
             # Kirchhoff current addition (negligible energy)
             energy_pJ = node.flops * 0.1  # Very low energy
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         elif node.op_type == OpType.ELEMENTWISE_MUL:
             # Gilbert cell / analog multiplier
             energy_pJ = node.flops * profile.analog_mac_energy_pJ
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         elif node.op_type in (OpType.ANALOG_SIGMOID, OpType.ANALOG_EXP, OpType.ANALOG_RELU):
             # Subthreshold MOSFET differential pair / current mirror
             energy_pJ = node.flops * 0.5  # Low energy analog activation
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         elif node.op_type == OpType.NOISE_INJECTION:
             # Thermal/shot noise source (TRNG)
             energy_pJ = node.flops * profile.thermodynamic_sample_energy_pJ
-            latency_ns = node.flops * profile.rng_latency_ns
+            latency_ns = node.flops * profile.rng_latency_ns  # Assuming serial RNG
             
         elif node.op_type in (OpType.SAMPLE, OpType.GIBBS_STEP):
             # p-bit / sMTJ / subthreshold CMOS RNG
@@ -166,45 +307,46 @@ def estimate_node_cost(node: AnalogNode, profile: HardwareProfile) -> HardwareEs
         elif node.op_type == OpType.SKIP_CONNECTION:
             # Current summation (negligible)
             energy_pJ = node.flops * 0.1
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         elif node.op_type == OpType.GAIN:
             # Programmable gain amplifier
             energy_pJ = node.flops * 0.5
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
             
         else:
             # Fallback for other analog ops
             energy_pJ = node.flops * profile.analog_mac_energy_pJ
-            latency_ns = node.flops / profile.analog_mac_throughput * 1e9
+            latency_ns = node.seq_len * profile.crossbar_read_latency_ns
     else:
         # Digital-required operations
         if node.op_type in (OpType.SOFTMAX, OpType.LAYER_NORM, OpType.GROUP_NORM,
                            OpType.RMS_NORM, OpType.BATCH_NORM):
             # Precision-critical operations
             energy_pJ = node.flops * profile.digital_mac_energy_pJ
-            latency_ns = node.flops / profile.digital_mac_throughput * 1e9
+            # Use research-validated digital MAC latency (1 ns per operation)
+            latency_ns = node.flops * profile.digital_mac_latency_ns
             
         elif node.op_type in (OpType.SOFTPLUS, OpType.SILU, OpType.GELU, OpType.ADALN):
             # Activation functions
             energy_pJ = node.flops * profile.digital_mac_energy_pJ
-            latency_ns = node.flops / profile.digital_mac_throughput * 1e9
+            latency_ns = node.flops * profile.digital_mac_latency_ns
             
         elif node.op_type == OpType.DYNAMIC_MATMUL:
             # Data-dependent matrix multiply (Q.K^T, attn.V)
             mac_count = node.flops // 2
             energy_pJ = mac_count * profile.digital_mac_energy_pJ
-            latency_ns = mac_count / profile.digital_mac_throughput * 1e9
+            latency_ns = mac_count * profile.digital_mac_latency_ns
             
         elif node.op_type == OpType.EMBEDDING:
             # Embedding lookup (memory-bound)
             energy_pJ = node.param_count * profile.digital_memory_access_pJ
-            latency_ns = node.param_count / profile.digital_mac_throughput * 1e9
+            latency_ns = node.param_count * profile.digital_mac_latency_ns
             
         elif node.op_type == OpType.MAX_POOL:
             # Spatial downsampling
             energy_pJ = node.flops * profile.digital_mac_energy_pJ
-            latency_ns = node.flops / profile.digital_mac_throughput * 1e9
+            latency_ns = node.flops * profile.digital_mac_latency_ns
             
         elif node.op_type == OpType.DROPOUT:
             # Zero-compute at inference
@@ -219,7 +361,7 @@ def estimate_node_cost(node: AnalogNode, profile: HardwareProfile) -> HardwareEs
         else:
             # Fallback for other digital ops
             energy_pJ = node.flops * profile.digital_mac_energy_pJ
-            latency_ns = node.flops / profile.digital_mac_throughput * 1e9
+            latency_ns = node.flops * profile.digital_mac_latency_ns
     
     # Compute power (energy / latency)
     power_mW = energy_pJ / latency_ns * 1e3 if latency_ns > 0 else 0.0

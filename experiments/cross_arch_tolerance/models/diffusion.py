@@ -181,7 +181,7 @@ def load_model(save_path: str) -> nn.Module:
 _EVAL_SEED = 42  # Fixed seed for initial noise — eliminates sampling variance across trials
 
 
-def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
+def evaluate(model: nn.Module, analog_substrate: str = "classic", substrate: str | None = None) -> float:
     """Generate 500 samples, compute negative mean nearest-neighbor distance.
 
     Uses a fixed seed for the initial noise tensor so the metric is deterministic
@@ -317,7 +317,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "classic") -> float:
     return -torch.cat(min_dists).mean().item()
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "classic") -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "classic", substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline generated samples.
     
     Returns negative MSE so higher = better (consistent with other metrics).
@@ -431,7 +431,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
                 x_analog = xp_analog
 
     mse = ((x_dig - x_analog) ** 2).mean().item()
-    return -mse
+    return mse  # Positive MSE, lower = better
 
 
 def get_family_name() -> str:

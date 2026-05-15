@@ -12,6 +12,7 @@ Total time: ~15-25 minutes depending on machine.
 import os
 import sys
 import time
+import random
 from pathlib import Path
 
 # Make sure project root is on path
@@ -23,6 +24,8 @@ _CKPT_DIR.mkdir(exist_ok=True)
 
 # Import all model modules
 from models import neural_ode, transformer, diffusion, flow, ebm, deq, ssm
+import numpy as np
+import torch
 
 _MODELS = [
     ("neural_ode",   neural_ode),
@@ -35,7 +38,16 @@ _MODELS = [
 ]
 
 
-def train_one(name: str, module, force: bool = False) -> None:
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed % (2**32 - 1))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def train_one(name: str, module, force: bool = False, seed: int = 42) -> None:
+    _set_seed(seed)
     ckpt_path = str(_CKPT_DIR / f"{name}.pt")
     if os.path.exists(ckpt_path) and not force:
         print(f"[{name}] Checkpoint exists, skipping. (--force to retrain)")
@@ -63,13 +75,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true", help="Retrain even if checkpoint exists")
     parser.add_argument("--only", type=str, default=None, help="Train only this model (e.g. neural_ode)")
+    parser.add_argument("--seed", type=int, default=42, help="Base seed for deterministic training")
     args = parser.parse_args()
 
     total_t0 = time.time()
-    for name, module in _MODELS:
+    for idx, (name, module) in enumerate(_MODELS):
         if args.only and name != args.only:
             continue
-        train_one(name, module, force=args.force)
+        train_one(name, module, force=args.force, seed=args.seed + idx * 10_000)
 
     total_elapsed = time.time() - total_t0
     print(f"\nAll models trained in {total_elapsed:.0f}s total.")

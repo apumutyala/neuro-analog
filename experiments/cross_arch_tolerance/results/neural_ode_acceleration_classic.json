@@ -1,0 +1,20 @@
+{
+  "architecture": "neural_ode",
+  "family": "neural_ode",
+  "digital_iterations": 40,
+  "analog_settling_time_constants": 3.0,
+  "speedup_settling_vs_digital": 13.333333333333334,
+  "energy_saving_ratio": 4000.0,
+  "digital_energy_per_iteration_pJ": 10.0,
+  "analog_energy_per_step_pJ": 0.1,
+  "speedup_notes": "Neural ODE: 40 digital RK evaluations \u2192 analog integrator in 3.0\u03c4. Speedup \u2248 13.3\u00d7. Stiff systems (large Lipschitz) require fast integrators.",
+  "metadata": {
+    "arch": "neural_ode",
+    "analog_domain": "conservative",
+    "analog_substrate": "classic",
+    "seed": 42,
+    "pilot_profile_path": "/workspace/NEW_ACTUAL_RUNS/5-14/945/experiments/cross_arch_tolerance/results/profiles/neural_ode_profile_classic.json",
+    "dynamics_diagnostics": {},
+    "calibration": "runner: neural_ode(t,x), data+standard-normal states"
+  }
+}

@@ -29,12 +29,13 @@ will catch all of them since we replace at the nn.Linear level regardless of con
 from __future__ import annotations
 
 import copy
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn as nn
 
 from .analog_linear import AnalogLinear
+from .substrates import SubstrateBase, get_substrate
 from .analog_activation import (
     AnalogTanh, AnalogSigmoid, AnalogReLU, AnalogGELU, AnalogSiLU,
     AnalogELU, AnalogLeakyReLU, AnalogHardswish, AnalogMish,
@@ -68,6 +69,19 @@ _ACT_REPLACEMENTS = {
 _CONV_TYPES = (nn.Conv1d, nn.Conv2d, nn.Conv3d)
 
 
+def _is_linear_like(module: nn.Module) -> bool:
+    """Return True for nn.Linear and parametrized linear wrappers."""
+    if isinstance(module, nn.Linear):
+        return True
+    weight = getattr(module, "weight", None)
+    return (
+        hasattr(module, "in_features")
+        and hasattr(module, "out_features")
+        and isinstance(weight, torch.Tensor)
+        and weight.ndim == 2
+    )
+
+
 def analogize(
     model: nn.Module,
     sigma_mismatch: float = 0.05,
@@ -76,6 +90,7 @@ def analogize(
     cap_F: float = 1e-12,
     v_ref: float = 1.0,
     v_ref_input: float | None = None,
+    substrate: SubstrateBase | str | None = None,
 ) -> nn.Module:
     """Convert any PyTorch model to analog-simulated execution.
 
@@ -96,6 +111,11 @@ def analogize(
         New nn.Module with analog-replaced layers.
     """
     device = next((p.device for p in model.parameters()), torch.device("cpu"))
+
+    # Resolve substrate string to instance
+    if isinstance(substrate, str):
+        substrate = get_substrate(substrate, temperature_K=temperature_K)
+
     analog_model = copy.deepcopy(model)
     _replace_recursive(
         analog_model,
@@ -104,6 +124,7 @@ def analogize(
         temperature_K=temperature_K,
         cap_F=cap_F,
         v_ref=v_ref,
+        substrate=substrate,
     )
     analog_model = analog_model.to(device)
 
@@ -150,17 +171,19 @@ def _replace_recursive(module: nn.Module, **kwargs) -> None:
             setattr(module, name, replacement)
 
         # ── 3. Linear ────────────────────────────────────────────────────────
-        elif isinstance(child, nn.Linear):
+        elif _is_linear_like(child):
+            bias = getattr(child, "bias", None)
             replacement = AnalogLinear(
                 in_features=child.in_features,
                 out_features=child.out_features,
                 weight=child.weight.data,
-                bias=child.bias.data if child.bias is not None else None,
+                bias=bias.data if bias is not None else None,
                 sigma_mismatch=kwargs["sigma_mismatch"],
                 n_adc_bits=kwargs["n_adc_bits"],
                 temperature_K=kwargs["temperature_K"],
                 cap_F=kwargs["cap_F"],
                 v_ref=kwargs["v_ref"],
+                substrate=kwargs.get("substrate"),
             )
             setattr(module, name, replacement)
 
@@ -217,7 +240,11 @@ def set_all_noise(
             )
 
 
-def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None:
+def calibrate_analog_model(
+    model: nn.Module,
+    sample_input: torch.Tensor | tuple | dict | None = None,
+    calibration_runner: Callable[[nn.Module], object] | None = None,
+) -> None:
     """Set v_ref and v_ref_input for all crossbar layers from a representative forward pass.
 
     Runs a noiseless forward pass (mismatch+thermal+quantization off) through the model,
@@ -228,7 +255,27 @@ def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None
     Both are set per layer, since input and output distributions can differ
     significantly (e.g. first layer sees raw data, intermediate layers see
     bounded activations).
+
+    Args:
+        model: Analogized model to calibrate.
+        sample_input: Representative input. Tuples are passed as ``model(*sample_input)``
+            and dicts as ``model(**sample_input)``.
+        calibration_runner: Optional callable for models with non-standard forward
+            signatures, e.g. ``lambda m: m(t, x)`` or ``lambda m: m(x_t, t)``.
     """
+    if calibration_runner is None and sample_input is None:
+        raise ValueError("Provide sample_input or calibration_runner for calibration")
+
+    saved_noise = {
+        name: {
+            attr: getattr(module, attr)
+            for attr in ("_use_thermal", "_use_quantization", "_use_mismatch")
+            if hasattr(module, attr)
+        }
+        for name, module in model.named_modules()
+        if any(hasattr(module, attr) for attr in ("_use_thermal", "_use_quantization", "_use_mismatch"))
+    }
+
     # Temporarily disable noise for calibration pass
     set_all_noise(model, thermal=False, quantization=False, mismatch=False)
 
@@ -236,26 +283,46 @@ def calibrate_analog_model(model: nn.Module, sample_input: torch.Tensor) -> None
 
     from .analog_conv import AnalogConv1d, AnalogConv2d, AnalogConv3d
     calibrate_types = (AnalogLinear, AnalogConv1d, AnalogConv2d, AnalogConv3d)
+    input_peaks: dict[str, float] = {}
+    output_peaks: dict[str, float] = {}
+    modules_by_name: dict[str, nn.Module] = {}
 
     for name, module in model.named_modules():
         if isinstance(module, calibrate_types):
+            modules_by_name[name] = module
             def make_hook(n, m):
                 def hook(mod, inp, out):
                     peak_in = float(inp[0].detach().abs().max().item())
-                    m.v_ref_input = peak_in * 1.1 if peak_in > 0 else 1.0
+                    input_peaks[n] = max(input_peaks.get(n, 0.0), peak_in)
                     peak_out = float(out.detach().abs().max().item())
-                    m.v_ref = peak_out * 1.1 if peak_out > 0 else 1.0
+                    output_peaks[n] = max(output_peaks.get(n, 0.0), peak_out)
                 return hook
             hooks.append(module.register_forward_hook(make_hook(name, module)))
 
-    with torch.no_grad():
-        model(sample_input)
+    try:
+        with torch.no_grad():
+            if calibration_runner is not None:
+                calibration_runner(model)
+            elif isinstance(sample_input, tuple):
+                model(*sample_input)
+            elif isinstance(sample_input, dict):
+                model(**sample_input)
+            else:
+                model(sample_input)
 
-    for h in hooks:
-        h.remove()
+        for name, module in modules_by_name.items():
+            peak_in = input_peaks.get(name, 0.0)
+            module.v_ref_input = peak_in * 1.1 if peak_in > 0 else 1.0
+            peak_out = output_peaks.get(name, 0.0)
+            module.v_ref = peak_out * 1.1 if peak_out > 0 else 1.0
+    finally:
+        for h in hooks:
+            h.remove()
 
-    # Re-enable all noise
-    set_all_noise(model, thermal=True, quantization=True, mismatch=True)
+        for name, module in model.named_modules():
+            if name in saved_noise:
+                for attr, value in saved_noise[name].items():
+                    setattr(module, attr, value)
 
 
 def configure_analog_profile(model: nn.Module, profile: str) -> None:

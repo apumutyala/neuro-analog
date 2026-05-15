@@ -201,7 +201,7 @@ _N_BURN = 500   # burn-in steps from random init to reach near-stationary distri
 _N_EVAL = 200   # number of independent chains to sample
 
 
-def evaluate(model: nn.Module) -> float:
+def evaluate(model: nn.Module, substrate: str | None = None) -> float:
     """Free-generation quality: Gibbs chain from random init, negative mean NN distance.
 
     Starts from v ~ Bernoulli(0.5) (uninformed prior), runs _N_BURN Gibbs steps
@@ -230,7 +230,7 @@ def evaluate(model: nn.Module) -> float:
     return -min_dists.mean().item()                   # higher = better
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline reconstructions.
     
     Returns negative MSE so higher = better (consistent with other metrics).
@@ -251,7 +251,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
         v_recon_analog = model.v_given_h(h_prob_analog)
 
     mse = ((v_recon_dig - v_recon_analog) ** 2).mean().item()
-    return -mse
+    return mse  # Positive MSE, lower = better
 
 
 def get_family_name() -> str:
