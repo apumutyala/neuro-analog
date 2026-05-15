@@ -56,7 +56,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Physical constants (same as nonidealities/noise.py for consistency)
+from .substrates import SubstrateBase
+
+# Physical constants
 _K_B: float = 1.380649e-23   # Boltzmann constant [J/K]
 _DEFAULT_TEMP_K: float = 300.0
 _DEFAULT_CAP_F: float = 1e-12  # 1 pF — HCDCv2 integration capacitor
@@ -81,6 +83,7 @@ class AnalogLinear(nn.Module):
         temperature_K: float = _DEFAULT_TEMP_K,
         cap_F: float = _DEFAULT_CAP_F,
         v_ref: float = 1.0,
+        substrate: SubstrateBase | None = None,
     ):
         super().__init__()
         self.in_features = in_features
@@ -91,6 +94,7 @@ class AnalogLinear(nn.Module):
         self.cap_F = cap_F
         self.v_ref = v_ref
         self.v_ref_input = v_ref  # calibrated separately from input distribution
+        self.substrate = substrate
 
         # Noise source toggles (for ablation experiments)
         self._use_mismatch = True
@@ -116,6 +120,9 @@ class AnalogLinear(nn.Module):
             self.register_buffer("delta_bias", torch.ones(out_features))
         else:
             self.register_buffer("delta_bias", None)
+
+        # Effective weights after static perturbation (mismatch or substrate drift)
+        self.register_buffer("W_eff", torch.zeros_like(self.W_nominal))
         self._resample_delta()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -169,19 +176,27 @@ class AnalogLinear(nn.Module):
             x = torch.clamp(x, -self.v_ref_input, self.v_ref_input)
             x = torch.round(x * scale) / scale
 
-        # Step 1 — Conductance mismatch (static per device)
-        if self._use_mismatch and self.sigma_mismatch > 0:
-            W_eff = self.W_nominal * self.delta
-            bias_eff = self.bias * self.delta_bias if self.delta_bias is not None else self.bias
+        # Step 1 — Effective weights (mismatch or substrate perturbation)
+        if self._use_mismatch and (self.sigma_mismatch > 0 or self.substrate is not None):
+            W_eff = self.W_eff
+            if self.substrate is not None:
+                bias_eff = self.bias
+            else:
+                bias_eff = self.bias * self.delta_bias if self.delta_bias is not None else self.bias
         else:
             W_eff = self.W_nominal
             bias_eff = self.bias
 
         y = F.linear(x, W_eff, bias_eff)
 
-        # Step 2 — Thermal read noise: σ = sqrt(kT/C) * sqrt(in_features)
+        # Step 2 — Thermal/read noise
         if self._use_thermal:
-            sigma_th = math.sqrt(_K_B * self.temperature_K / self.cap_F) * math.sqrt(self.in_features)
+            if self.substrate is not None:
+                sigma_read = self.substrate.read_noise_std(self.W_eff)
+                # Scale per-weight noise to output noise (assuming normalized inputs)
+                sigma_th = sigma_read * math.sqrt(self.in_features)
+            else:
+                sigma_th = math.sqrt(_K_B * self.temperature_K / self.cap_F) * math.sqrt(self.in_features)
             y = y + torch.randn_like(y) * sigma_th
 
         # Step 3 — ADC quantization over [-V_ref, V_ref]
@@ -200,19 +215,27 @@ class AnalogLinear(nn.Module):
     # ──────────────────────────────────────────────────────────────────────
 
     def _resample_delta(self) -> None:
+        if self.substrate is not None:
+            with torch.no_grad():
+                self.W_eff = self.substrate.perturb_weights(self.W_nominal)
+            return
+
         device = self.W_nominal.device
         if self.sigma_mismatch > 0:
             self.delta = torch.ones(self.out_features, self.in_features, device=device) + \
                          self.sigma_mismatch * torch.randn(self.out_features, self.in_features, device=device)
             if self.delta_bias is not None:
                 self.delta_bias = 1.0 + self.sigma_mismatch * torch.randn(self.out_features, device=device)
+            self.W_eff = self.W_nominal * self.delta
         else:
             self.delta = torch.ones(self.out_features, self.in_features, device=device)
             if self.delta_bias is not None:
                 self.delta_bias = torch.ones(self.out_features, device=device)
+            self.W_eff = self.W_nominal.clone()
 
     def extra_repr(self) -> str:
+        substrate_name = self.substrate.name() if self.substrate is not None else "none"
         return (
             f"in={self.in_features}, out={self.out_features}, "
-            f"σ={self.sigma_mismatch:.3f}, bits={self.n_adc_bits}"
+            f"σ={self.sigma_mismatch:.3f}, bits={self.n_adc_bits}, substrate={substrate_name}"
         )

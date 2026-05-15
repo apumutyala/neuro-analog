@@ -142,15 +142,16 @@ class StableDiffusionExtractor(BaseExtractor):
             model_params=total_params,
         )
 
+        # Build encoder, middle, decoder blocks by walking the actual model
+        seq_len = self._get_seq_len()
+
         # Timestep embedding MLP
-        graph.add_node(make_mvm_node("time_embed.linear1", 320, 1280))
-        graph.add_node(make_activation_node("time_embed.silu", 1280, "silu"))
-        graph.add_node(make_mvm_node("time_embed.linear2", 1280, 1280))
+        graph.add_node(make_mvm_node("time_embed.linear1", 320, 1280, seq_len=seq_len))
+        graph.add_node(make_activation_node("time_embed.silu", 1280, "silu", seq_len=seq_len))
+        graph.add_node(make_mvm_node("time_embed.linear2", 1280, 1280, seq_len=seq_len))
         graph.add_edge("time_embed.linear1", "time_embed.silu")
         graph.add_edge("time_embed.silu", "time_embed.linear2")
 
-        # Build encoder, middle, decoder blocks by walking the actual model
-        seq_len = self._get_seq_len()
         self._build_unet_graph(graph, seq_len)
         
         # ODE/SDE update step (per denoising iteration)
@@ -160,7 +161,7 @@ class StableDiffusionExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(self.in_channels, self.img_size, self.img_size),
             output_shape=(self.in_channels, self.img_size, self.img_size),
-            flops=spatial_flops,
+            seq_len=seq_len, flops=seq_len * (spatial_flops),
             metadata={"description": "√ᾱ scaling via programmable gain amp"},
         ))
         graph.add_node(AnalogNode(
@@ -168,7 +169,7 @@ class StableDiffusionExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(self.in_channels, self.img_size, self.img_size),
             output_shape=(self.in_channels, self.img_size, self.img_size),
-            flops=spatial_flops,
+            seq_len=seq_len, flops=seq_len * (spatial_flops),
             metadata={"description": "x_{t-1} = scaled_x0 + noise_component"},
         ))
         # target_sigma for calibration error metric: √β at median timestep.
@@ -195,8 +196,8 @@ class StableDiffusionExtractor(BaseExtractor):
         # Encoder
         for level in range(4):
             ch = [320, 640, 1280, 1280][level]
-            self._add_resblock_nodes(graph, f"encoder.level{level}.block0", ch, ch)
-            self._add_resblock_nodes(graph, f"encoder.level{level}.block1", ch, ch)
+            self._add_resblock_nodes(graph, f"encoder.level{level}.block0", ch, ch, seq_len=seq_len)
+            self._add_resblock_nodes(graph, f"encoder.level{level}.block1", ch, ch, seq_len=seq_len)
 
             if level > 0:
                 prefix = f"encoder.level{level}.attention"
@@ -204,40 +205,40 @@ class StableDiffusionExtractor(BaseExtractor):
 
             # Downsample (strided conv)
             if level < 3:
-                graph.add_node(make_mvm_node(f"encoder.level{level}.downsample", ch, ch * 2))
+                graph.add_node(make_mvm_node(f"encoder.level{level}.downsample", ch, ch * 2, seq_len=seq_len))
 
         # Middle block
-        self._add_resblock_nodes(graph, "middle.block1", 1280, 1280)
+        self._add_resblock_nodes(graph, "middle.block1", 1280, 1280, seq_len=seq_len)
         self._add_attention_nodes(graph, "middle.attention", 1280, heads=20, seq_len=seq_len)
-        self._add_resblock_nodes(graph, "middle.block2", 1280, 1280)
+        self._add_resblock_nodes(graph, "middle.block2", 1280, 1280, seq_len=seq_len)
 
         # Decoder
         for level in range(3, -1, -1):
             ch = [320, 640, 1280, 1280][level]
-            self._add_resblock_nodes(graph, f"decoder.level{level}.block0", ch, ch)
-            self._add_resblock_nodes(graph, f"decoder.level{level}.block1", ch, ch)
+            self._add_resblock_nodes(graph, f"decoder.level{level}.block0", ch, ch, seq_len=seq_len)
+            self._add_resblock_nodes(graph, f"decoder.level{level}.block1", ch, ch, seq_len=seq_len)
 
 
             if level > 0:
                 self._add_attention_nodes(graph, f"decoder.level{level}.attention", ch, ch // 64, seq_len=seq_len)
 
         # Final output
-        graph.add_node(make_norm_node("final.group_norm", 320, "group_norm"))
-        graph.add_node(make_activation_node("final.silu", 320, "silu"))
-        graph.add_node(make_mvm_node("final.conv", 320, 4))
+        graph.add_node(make_norm_node("final.group_norm", 320, "group_norm", seq_len=seq_len))
+        graph.add_node(make_activation_node("final.silu", 320, "silu", seq_len=seq_len))
+        graph.add_node(make_mvm_node("final.conv", 320, 4, seq_len=seq_len))
     
-    def _add_resblock_nodes(self, graph: AnalogGraph, prefix: str, ch_in: int, ch_out: int):
+    def _add_resblock_nodes(self, graph: AnalogGraph, prefix: str, ch_in: int, ch_out: int, seq_len: int = 1):
         """Add nodes for a residual block: norm → act → conv → norm → act → conv + skip."""
-        graph.add_node(make_norm_node(f"{prefix}.norm1", ch_in, "group_norm"))
-        graph.add_node(make_activation_node(f"{prefix}.silu1", ch_in, "silu"))
-        graph.add_node(make_mvm_node(f"{prefix}.conv1", ch_in, ch_out))
-        graph.add_node(make_norm_node(f"{prefix}.norm2", ch_out, "group_norm"))
-        graph.add_node(make_activation_node(f"{prefix}.silu2", ch_out, "silu"))
-        graph.add_node(make_mvm_node(f"{prefix}.conv2", ch_out, ch_out))
+        graph.add_node(make_norm_node(f"{prefix}.norm1", ch_in, "group_norm", seq_len=seq_len))
+        graph.add_node(make_activation_node(f"{prefix}.silu1", ch_in, "silu", seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.conv1", ch_in, ch_out, seq_len=seq_len))
+        graph.add_node(make_norm_node(f"{prefix}.norm2", ch_out, "group_norm", seq_len=seq_len))
+        graph.add_node(make_activation_node(f"{prefix}.silu2", ch_out, "silu", seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.conv2", ch_out, ch_out, seq_len=seq_len))
         graph.add_node(AnalogNode(
             name=f"{prefix}.residual", op_type=OpType.SKIP_CONNECTION,
             domain=Domain.ANALOG, input_shape=(ch_out,), output_shape=(ch_out,),
-            flops=ch_out,
+            seq_len=seq_len, flops=seq_len * (ch_out),
         ))
     
     def _add_attention_nodes(self, graph: AnalogGraph, prefix: str, dim: int, heads: int, seq_len: int = 1024):
@@ -245,16 +246,16 @@ class StableDiffusionExtractor(BaseExtractor):
         head_dim = dim // heads
         seq_len_sq = seq_len * seq_len
         # Q, K, V projections — ANALOG (static weight MVMs)
-        graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim))
-        graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim))
-        graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim))
+        graph.add_node(make_mvm_node(f"{prefix}.q_proj", dim, dim, seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.k_proj", dim, dim, seq_len=seq_len))
+        graph.add_node(make_mvm_node(f"{prefix}.v_proj", dim, dim, seq_len=seq_len))
 
         # Q·K^T — DIGITAL (data-dependent dynamic matmul)
         graph.add_node(AnalogNode(
             name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, head_dim), output_shape=(heads, -1, -1),
-            flops=seq_len_sq * heads * head_dim,
+            seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
         ))
 
         # Softmax — DIGITAL
@@ -262,7 +263,7 @@ class StableDiffusionExtractor(BaseExtractor):
             name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, -1), output_shape=(heads, -1, -1),
-            flops=seq_len_sq * heads,
+            seq_len=seq_len, flops=seq_len_sq * heads,
         ))
 
         # attn · V — DIGITAL (data-dependent)
@@ -270,11 +271,11 @@ class StableDiffusionExtractor(BaseExtractor):
             name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
             domain=Domain.DIGITAL,
             input_shape=(heads, -1, -1), output_shape=(heads, -1, head_dim),
-            flops=seq_len_sq * heads * head_dim,
+            seq_len=seq_len, flops=seq_len_sq * heads * head_dim,
         ))
 
         # Output projection — ANALOG
-        graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
+        graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim, seq_len=seq_len))
 
 
 class DiTExtractor(BaseExtractor):
@@ -335,7 +336,7 @@ class DiTExtractor(BaseExtractor):
 
         # Patch embedding: 256×256 image → 16×16 patches → 1024 tokens × 1152 dim
         dim = 1152
-        graph.add_node(make_mvm_node("patch_embed", 4 * 16 * 16, dim))
+        graph.add_node(make_mvm_node("patch_embed", 4 * 16 * 16, dim, seq_len=seq_len))
 
         # 28 DiT blocks
         for i in range(28):
@@ -346,48 +347,48 @@ class DiTExtractor(BaseExtractor):
                 name=f"{prefix}.adaln", op_type=OpType.ADALN,
                 domain=Domain.DIGITAL,
                 input_shape=(dim,), output_shape=(6 * dim,),
-                flops=6 * dim * dim,  # Regress 6 modulation params
+                seq_len=seq_len, flops=seq_len * 6 * dim * dim,  # Regress 6 modulation params
             ))
 
             # Self-attention
-            graph.add_node(make_mvm_node(f"{prefix}.qkv_proj", dim, 3 * dim))
+            graph.add_node(make_mvm_node(f"{prefix}.qkv_proj", dim, 3 * dim, seq_len=seq_len))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_score", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(16, -1, 72), output_shape=(16, -1, -1),  # 16 heads
-                flops=seq_len_sq * 16 * 72,
+                seq_len=seq_len, flops=seq_len_sq * 16 * 72,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.softmax", op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
                 input_shape=(16, -1, -1), output_shape=(16, -1, -1),
-                flops=seq_len_sq * 16,
+                seq_len=seq_len, flops=seq_len_sq * 16,
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.attn_value", op_type=OpType.DYNAMIC_MATMUL,
                 domain=Domain.DIGITAL,
                 input_shape=(16, -1, -1), output_shape=(16, -1, 72),
-                flops=seq_len_sq * 16 * 72,
+                seq_len=seq_len, flops=seq_len_sq * 16 * 72,
             ))
-            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim))
+            graph.add_node(make_mvm_node(f"{prefix}.out_proj", dim, dim, seq_len=seq_len))
 
             # FFN
-            graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, 4 * dim))
-            graph.add_node(make_activation_node(f"{prefix}.gelu", 4 * dim, "gelu"))
-            graph.add_node(make_mvm_node(f"{prefix}.ffn2", 4 * dim, dim))
+            graph.add_node(make_mvm_node(f"{prefix}.ffn1", dim, 4 * dim, seq_len=seq_len))
+            graph.add_node(make_activation_node(f"{prefix}.gelu", 4 * dim, "gelu", seq_len=seq_len))
+            graph.add_node(make_mvm_node(f"{prefix}.ffn2", 4 * dim, dim, seq_len=seq_len))
 
             # Residual connections
             graph.add_node(AnalogNode(
                 name=f"{prefix}.residual1", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), seq_len=seq_len, flops=seq_len * (dim),
             ))
             graph.add_node(AnalogNode(
                 name=f"{prefix}.residual2", op_type=OpType.SKIP_CONNECTION,
-                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), flops=dim,
+                domain=Domain.ANALOG, input_shape=(dim,), output_shape=(dim,), seq_len=seq_len, flops=seq_len * (dim),
             ))
 
         # Unpatchify: linear projection back to pixel space
-        graph.add_node(make_mvm_node("unpatchify", dim, 4 * 16 * 16))
+        graph.add_node(make_mvm_node("unpatchify", dim, 4 * 16 * 16, seq_len=seq_len))
 
         return graph
 

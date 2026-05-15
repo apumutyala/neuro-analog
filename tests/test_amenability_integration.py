@@ -15,6 +15,7 @@ from pathlib import Path
 from neuro_analog.ir.types import AnalogAmenabilityProfile, ArchitectureFamily, DynamicsProfile
 from neuro_analog.ir.energy_model import compute_amenability_score
 from neuro_analog.analysis.design_heuristics import classify_failure_mode
+from neuro_analog.analysis.compute_amenability import compute_amenability_for_architecture
 
 
 class TestAmenabilityIntegration:
@@ -231,6 +232,42 @@ class TestAmenabilityIntegration:
             increasing_count = sum(1 for i in range(len(scores_sorted)-1) if scores_sorted[i+1] >= scores_sorted[i])
             # At least half should be increasing
             assert increasing_count >= len(scores_sorted) // 2
+
+
+class TestComputeAmenabilityProfiles:
+    def test_missing_profile_is_rejected(self):
+        with pytest.raises(ValueError, match="Real IR/profile JSON is required"):
+            compute_amenability_for_architecture(
+                "toy",
+                {"degradation_threshold_10pct": 0.05},
+                profile_path=None,
+            )
+
+    def test_real_profile_fields_are_used(self, tmp_path):
+        profile_path = tmp_path / "toy_profile.json"
+        profile_path.write_text(json.dumps({
+            "architecture": "transformer",
+            "model_name": "toy",
+            "model_params": 123,
+            "analog_flop_fraction": 0.75,
+            "digital_flop_fraction": 0.25,
+            "hybrid_flop_fraction": 0.0,
+            "da_boundary_count": 2,
+            "layer_count": 5,
+            "min_weight_precision_bits": 8,
+            "min_activation_precision_bits": 8,
+            "dynamics": {"has_dynamics": False, "dynamics_type": ""},
+        }))
+
+        data = compute_amenability_for_architecture(
+            "toy",
+            {"degradation_threshold_10pct": 0.05},
+            profile_path=profile_path,
+        )
+
+        assert data["architecture"] == "toy"
+        assert data["sigma_10pct"] == 0.05
+        assert data["amenability_score"] > 0.0
 
 
 if __name__ == "__main__":

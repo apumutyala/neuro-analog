@@ -1,6 +1,8 @@
 # neuro-analog
 
-A framework for co-designing analog hardware with modern neural network architectures. This codebase helps hardware architects understand which neural computations map naturally to analog circuits, and helps ML researchers understand how their models will behave on analog hardware.
+A framework for co-designing analog hardware with modern neural network architectures. This codebase bridges hardware and neural architects by decomposing neural networks into circuit-level primitives. Hardware architects learn what computational patterns their substrates can support; neural architects learn how their models will behave on analog hardware.
+
+1-Page Abstract: 
 
 ## Quick Start
 
@@ -30,11 +32,11 @@ Modern neural architectures go beyond transformers and CNNs. State-space models 
 
 This framework answers two questions:
 
-1. **For hardware architects:** Which neural architectures are naturally compatible with analog circuits? Which computational patterns break under analog nonidealities?
+1. For hardware architects: What circuit primitives can implement neural computations? What in-memory-compute technologies/components (RRAM, PCM, SRAM-IMC) are best suited for which computational patterns? How do I map neural operations to my hardware efficiently?
 
-2. **For ML researchers:** How will my model behave on analog hardware? Where are the D/A boundaries? What energy/latency gains can I expect?
+2. For neural architects: How will my model behave on analog hardware? Which operations in my architecture are analog-compatible? What energy/latency gains can I expect from analog deployment?
 
-We simulate physics-grounded analog effects (conductance mismatch, thermal noise, ADC quantization) across 7 architecture families on real tasks (CIFAR-10, WikiText-2). The framework decomposes models into ~20 circuit-level primitives (crossbar MVM, integrator, RC decay, Gibbs sampler) and maps each to analog-native, digital-required, or hybrid domains.
+We simulate physics-grounded analog effects (conductance mismatch, thermal noise, ADC quantization) across 7 architecture families on real tasks (CIFAR-10, WikiText-2). The framework decomposes models into about 20 circuit-level primitives (crossbar MVM, integrator, RC decay, Gibbs sampler) and maps each to analog-native, digital-required, or hybrid domains.
 
 ## Current Status
 
@@ -68,10 +70,10 @@ See `notebooks/intermediate_representation.ipynb` for a deep dive into the IR sy
 
 The framework models different analog substrates:
 
-- **rc_integrator**: For Neural ODEs and flows. Models RC circuit ODE solver with Johnson-Nyquist noise on integration capacitors.
-- **hopfield**: For DEQs. Models continuous-time analog feedback relaxation with thermal noise.
-- **classic**: For diffusion. Standard DDIM sampling.
-- **cld**: For diffusion. Critically-damped Langevin dynamics mapping to RLC circuits.
+- rc_integrator: For Neural ODEs and flows. Models RC circuit ODE solver with Johnson-Nyquist noise on integration capacitors.
+- hopfield: For DEQs. Models continuous-time analog feedback relaxation with thermal noise.
+- classic: For diffusion. Standard DDIM sampling.
+- cld: For diffusion. Critically-damped Langevin dynamics mapping to RLC circuits.
 
 By default, sweeps use circuit modes (rc_integrator, hopfield) to measure true analog hyperefficiency rather than digital approximations.
 
@@ -140,11 +142,11 @@ python experiments/cross_arch_tolerance/sweep_all.py --analog-substrate all
 
 From the pilot study (7 tiny models, 1K-103K params, low-dimensional tasks):
 
-**Single-pass architectures are broadly analog-tolerant.** Transformer, Neural ODE, SSM, Flow, and EBM maintain >=90% quality at 15% mismatch.
+Single-pass architectures are broadly analog-tolerant. Transformer, Neural ODE, SSM, Flow, and EBM maintain at least 90% quality at 15% mismatch.
 
-**Iterative convergence amplifies mismatch.** DEQ degrades at ~11% mismatch, suggesting fixed-point architectures are more sensitive to analog noise.
+Iterative convergence amplifies mismatch. DEQ degrades at about 11% mismatch, suggesting fixed-point architectures are more sensitive to analog noise.
 
-**Multi-step pipelines accumulate quantization error.** Diffusion never reaches 90% quality even at sigma=0 due to ADC quantization accumulating across 20 denoising steps.
+Multi-step pipelines accumulate quantization error. Diffusion never reaches 90% quality even at sigma=0 due to ADC quantization accumulating across 20 denoising steps.
 
 These patterns need validation at real scale. The unified benchmark will test whether they hold on CIFAR-10 and WikiText-2.
 
@@ -156,13 +158,13 @@ These tools confirm that analog hardware works for transformers. But they do not
 
 neuro-analog fills this gap by:
 
-1. **Architecture-agnostic IR**: Decomposes models into ~20 circuit-level primitives (MVM, integration, decay, Gibbs sampling) with domain annotations. This enables D/A boundary detection across diverse architectures.
+1. Architecture-agnostic IR: Decomposes models into about 30 circuit-level primitives (MVM, integration, decay, Gibbs sampling) with domain annotations. This enables D/A boundary detection across diverse architectures.
 
-2. **Systematic benchmark**: The first systematic characterization of analog tolerance across 7 modern architecture families (Transformer, Neural ODE, SSM, DEQ, Flow, EBM, Diffusion) on real tasks.
+2. Systematic benchmark: The first systematic characterization of analog tolerance across 7 modern architecture families (Transformer, Neural ODE, SSM, DEQ, Flow, EBM, Diffusion) on real tasks.
 
-3. **Physics-grounded noise models**: Each primitive has appropriate noise sources (kT/C for integrators, shot noise for samplers, ADC quantization for crossbars).
+3. Physics-grounded noise models: Each primitive has appropriate noise sources (kT/C for integrators, shot noise for samplers, ADC quantization for crossbars).
 
-4. **Energy/latency modeling**: Hardware-aware cost estimation alongside accuracy degradation.
+4. Energy/latency modeling: Hardware-aware cost estimation alongside accuracy degradation.
 
 Key primitive mappings:
 - S4D / Neural ODE / DEQ: INTEGRATION, DECAY, ANALOG_FIR
@@ -193,12 +195,13 @@ notebooks/
 ## For Hardware Architects
 
 Use this codebase to:
-- Identify which neural architectures map naturally to your analog substrate (see `notebooks/architecture_families.ipynb`)
-- Understand where D/A boundaries occur in modern models (see `notebooks/intermediate_representation.ipynb`)
-- Estimate energy/latency gains for different architectures
-- Validate that your target models tolerate your device noise levels (see `notebooks/amenability_analysis.ipynb`)
+- Understand which circuit primitives (crossbar, integrator, RC decay) can implement neural computations (see `notebooks/intermediate_representation.ipynb`)
+- Learn what computational patterns your hardware should support efficiently (see `notebooks/architecture_families.ipynb`)
+- Map neural operations to your substrate (RRAM, PCM, SRAM-IMC)
+- Estimate energy/latency gains for different computational patterns
+- Validate that your target patterns tolerate your device noise levels (see `notebooks/amenability_analysis.ipynb`)
 
-## For ML Researchers
+## For Neural Architects
 
 Use this codebase to:
 - Understand how your model will behave on analog hardware (see `notebooks/quickstart_tour.ipynb`)
@@ -215,7 +218,7 @@ If you use this codebase in your research, please cite:
 @software{neuro_analog,
   title = {neuro-analog: A Framework for Analog-Aware Neural Architecture Co-Design},
   author = {Mutyala, Apuroop},
-  year = {2025},
+  year = {2026},
   url = {https://github.com/apumutyala/neuro-analog}
 }
 ```
@@ -230,7 +233,7 @@ pip install -e ".[dev]"
 
 Optional extras: `[jax]` for Ark circuit export.
 
-**Requirements:**
+Requirements:
 - Python 3.10+
 - PyTorch 2.1+ with CUDA support
 - GPU: 8GB VRAM for pilot study, 40-80GB for unified benchmark

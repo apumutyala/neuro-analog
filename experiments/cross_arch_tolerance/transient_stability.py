@@ -166,8 +166,10 @@ def run_deq(n_infer=N_INFER):
             z = torch.zeros(n_test, digital.z_dim if hasattr(digital, 'z_dim') else 64, device=_DEVICE)
             scale = math.sqrt(z.shape[-1])
             k = 0
-            tol = 1e-4
-            max_iter = 100  # extend beyond normal 30 to detect non-convergence
+            # Align with model's own convergence criteria to avoid false
+            # non-convergence from a stricter tolerance than training/eval.
+            tol = getattr(digital, 'tol', 1e-2)
+            max_iter = getattr(digital, 'max_iter', 30)
             for k in range(max_iter):
                 z_next = analog.f_theta(z, X_batch)
                 diff = (z_next - z).norm(dim=-1).max().item() / scale

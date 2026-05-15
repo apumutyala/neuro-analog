@@ -127,16 +127,17 @@ class EBMExtractor(BaseExtractor):
         )
 
     def build_graph(self) -> AnalogGraph:
+        seq_len = self._get_seq_len()
         cfg = self.config
 
         if cfg.model_type == "hopfield":
-            return self._build_hopfield_graph(cfg)
+            return self._build_hopfield_graph(cfg, seq_len)
         elif cfg.model_type == "extropic_dtm":
-            return self._build_dtm_graph(cfg)
+            return self._build_dtm_graph(cfg, seq_len)
         else:
-            return self._build_rbm_graph(cfg)
+            return self._build_rbm_graph(cfg, seq_len)
 
-    def _build_rbm_graph(self, cfg: EBMConfig) -> AnalogGraph:
+    def _build_rbm_graph(self, cfg: EBMConfig, seq_len: int = 1) -> AnalogGraph:
         """Restricted Boltzmann Machine — one hidden layer.
 
         Gibbs sampling loop (zero D/A boundaries in steady state):
@@ -154,7 +155,7 @@ class EBMExtractor(BaseExtractor):
 
         # Positive phase: visible → hidden
         graph.add_node(make_mvm_node(
-            "rbm.W_fwd", cfg.num_visible, cfg.num_hidden,
+            "rbm.W_fwd", cfg.num_visible, cfg.num_hidden, seq_len=seq_len
         ))
         graph.add_node(AnalogNode(
             name="rbm.p_bit_h",
@@ -162,7 +163,7 @@ class EBMExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(cfg.num_hidden,),
             output_shape=(cfg.num_hidden,),
-            flops=cfg.num_hidden,
+            seq_len=seq_len, flops=seq_len * (cfg.num_hidden),
             metadata={
                 "description": "p-bit sampling: x_i ~ Bernoulli(σ(h_i/T))",
                 "temperature": cfg.temperature,
@@ -177,7 +178,7 @@ class EBMExtractor(BaseExtractor):
 
         # Negative phase: hidden → visible (transposed crossbar)
         graph.add_node(make_mvm_node(
-            "rbm.W_bwd", cfg.num_hidden, cfg.num_visible,
+            "rbm.W_bwd", cfg.num_hidden, cfg.num_visible, seq_len=seq_len
         ))
         graph.add_node(AnalogNode(
             name="rbm.p_bit_v",
@@ -185,7 +186,7 @@ class EBMExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(cfg.num_visible,),
             output_shape=(cfg.num_visible,),
-            flops=cfg.num_visible,
+            seq_len=seq_len, flops=seq_len * (cfg.num_visible),
             metadata={
                 "description": "Visible unit sampling via p-bit",
                 "hardware": "sMTJ",
@@ -258,7 +259,7 @@ class EBMExtractor(BaseExtractor):
             class_name=class_name,
         )
 
-    def _build_hopfield_graph(self, cfg: EBMConfig) -> AnalogGraph:
+    def _build_hopfield_graph(self, cfg: EBMConfig, seq_len: int = 1) -> AnalogGraph:
         """Modern Hopfield Network = transformer attention.
 
         Update rule (Ramsauer et al. 2020):
@@ -283,12 +284,12 @@ class EBMExtractor(BaseExtractor):
         )
 
         # Store patterns as crossbar conductances
-        graph.add_node(make_mvm_node("hopfield.X_T_query", n, m))  # X^T · ξ
+        graph.add_node(make_mvm_node("hopfield.X_T_query", n, m, seq_len=seq_len))  # X^T · ξ
         graph.add_node(AnalogNode(
             name="hopfield.beta_scale",
             op_type=OpType.GAIN,
             domain=Domain.ANALOG,
-            input_shape=(m,), output_shape=(m,), flops=m,
+            input_shape=(m,), output_shape=(m,), seq_len=seq_len, flops=seq_len * (m),
             metadata={"beta": cfg.hopfield_beta, "description": "Retrieval gain (programmable amp)"},
         ))
 
@@ -298,7 +299,7 @@ class EBMExtractor(BaseExtractor):
                 name="hopfield.analog_softmax",
                 op_type=OpType.ANALOG_SOFTMAX,
                 domain=Domain.HYBRID,
-                input_shape=(m,), output_shape=(m,), flops=3 * m,
+                input_shape=(m,), output_shape=(m,), seq_len=seq_len, flops=seq_len * (3 * m),
                 metadata={"description": "Approx softmax via subthreshold MOSFET exp + current sum"},
             ))
         else:
@@ -306,10 +307,10 @@ class EBMExtractor(BaseExtractor):
                 name="hopfield.softmax",
                 op_type=OpType.SOFTMAX,
                 domain=Domain.DIGITAL,
-                input_shape=(m,), output_shape=(m,), flops=3 * m,
+                input_shape=(m,), output_shape=(m,), seq_len=seq_len, flops=seq_len * (3 * m),
             ))
 
-        graph.add_node(make_mvm_node("hopfield.X_retrieve", m, n))  # X · attn
+        graph.add_node(make_mvm_node("hopfield.X_retrieve", m, n, seq_len=seq_len))  # X · attn
 
         sm_name = "hopfield.analog_softmax" if cfg.use_analog_softmax else "hopfield.softmax"
         graph.add_edge("hopfield.X_T_query", "hopfield.beta_scale")
@@ -318,7 +319,7 @@ class EBMExtractor(BaseExtractor):
 
         return graph
 
-    def _build_dtm_graph(self, cfg: EBMConfig) -> AnalogGraph:
+    def _build_dtm_graph(self, cfg: EBMConfig, seq_len: int = 1) -> AnalogGraph:
         """Extropic DTCA (Denoising Thermodynamic Computer Architecture) — chromatic Gibbs chain.
 
         Hardware model (Jelinčič et al. 2025, Section II):
@@ -361,7 +362,7 @@ class EBMExtractor(BaseExtractor):
                 op_type=OpType.ACCUMULATION,
                 domain=Domain.ANALOG,
                 input_shape=(n,), output_shape=(n,),
-                flops=n * k,  # Each of N spins sums k neighbors
+                seq_len=seq_len, flops=seq_len * (n * k),  # Each of N spins sums k neighbors
                 metadata={
                     "step": step,
                     "description": f"Sparse G_{k} neighbor field: h_i = Σ_{{j∈N_k(i)}} J_ij x_j",
@@ -378,7 +379,7 @@ class EBMExtractor(BaseExtractor):
                 op_type=OpType.RESISTOR_DAC,
                 domain=Domain.ANALOG,
                 input_shape=(n,), output_shape=(n,),
-                flops=n,
+                seq_len=seq_len, flops=seq_len * (n),
                 metadata={
                     "step": step,
                     "description": "Bias loading: h_i += b_i via DAC-driven resistor",
@@ -394,7 +395,7 @@ class EBMExtractor(BaseExtractor):
                 name=gibbs_id,
                 op_type=OpType.GIBBS_STEP,
                 domain=Domain.ANALOG,
-                input_shape=(n,), output_shape=(n,), flops=n,
+                input_shape=(n,), output_shape=(n,), seq_len=seq_len, flops=seq_len * (n),
                 metadata={
                     "step": step,
                     "description": f"Chromatic Gibbs: x_i ~ Bernoulli(σ(2β(h_i+b_i)))",

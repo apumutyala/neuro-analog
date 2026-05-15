@@ -249,6 +249,33 @@ class DynamicsProfile:
 
 
 @dataclass
+class StabilityBounds:
+    """Theoretical stability bounds for analog perturbation tolerance.
+
+    These are analytical estimates derived from matrix perturbation theory
+    and dynamical systems analysis, not empirical sweep results.
+    """
+    # Spectral radius bound (DEQ/implicit equilibrium)
+    max_sigma_spectral: float = 0.0     # σ before ρ(J) ≥ 1 (Bauer-Fike / Weilandt-Hoffmann)
+    spectral_radius_nominal: float = 0.0  # Nominal spectral radius ρ(J) at σ=0
+
+    # Lipschitz bound (Neural ODE / flow)
+    max_sigma_lipschitz: float = 0.0    # σ before Lipschitz constant exceeds stability region
+    lipschitz_constant: float = 0.0     # Nominal Lipschitz bound L
+
+    # Output variance bound (all architectures)
+    max_sigma_output_10pct: float = 0.0  # σ before output variance causes >10% quality loss
+    output_sensitivity: float = 0.0      # ∂(output MSE)/∂σ at σ=0
+
+    # SSM time-constant bound
+    max_sigma_timeconstant: float = 0.0  # σ before pole shifts break stability
+    time_constant_spread_dB: float = 0.0  # 20·log10(max|a_i| / min|a_i|)
+
+    # Overall stability margin
+    stability_margin_dB: float = 0.0     # 20·log10(1 / ρ_nominal) for iterative systems; 0 for non-iterative
+
+
+@dataclass
 class AnalogAmenabilityProfile:
     """Complete analog amenability assessment for one architecture instance.
 
@@ -305,7 +332,10 @@ class AnalogAmenabilityProfile:
     layer_count: int = 0
     sigma_10pct: float = 0.0        # Sigma at 10% degradation from sweep results
     amenability_score: float = 0.0  # Empirical amenability score (0-1)
-    
+
+    # Stability bounds (analytical, computed by AnalogGraph.compute_stability_bounds)
+    stability_bounds: StabilityBounds = field(default_factory=StabilityBounds)
+
     def compute_scores(self, weights: dict[str, float] | None = None, target_backend: 'TargetBackend | None' = None):
         """Compute composite scores from raw metrics.
         

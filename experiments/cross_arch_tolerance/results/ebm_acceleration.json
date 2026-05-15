@@ -1,0 +1,20 @@
+{
+  "architecture": "ebm",
+  "family": "ebm",
+  "digital_iterations": 100,
+  "analog_settling_time_constants": 1.0,
+  "speedup_settling_vs_digital": 100.0,
+  "energy_saving_ratio": 10000.0,
+  "digital_energy_per_iteration_pJ": 10.0,
+  "analog_energy_per_step_pJ": 0.1,
+  "speedup_notes": "EBM/DTCA: 100 digital Gibbs sweeps \u2192 thermodynamic compute in 1 physical step. Speedup \u2248 100\u00d7. Thermal noise IS the computational resource (DTCA \u00a7I).",
+  "metadata": {
+    "arch": "ebm",
+    "analog_domain": "conservative",
+    "analog_substrate": "classic",
+    "seed": 40042,
+    "pilot_profile_path": "/workspace/NEW_ACTUAL_RUNS/5-14/945/experiments/cross_arch_tolerance/results/profiles/ebm_profile.json",
+    "dynamics_diagnostics": {},
+    "calibration": "tensor sample_input"
+  }
+}

@@ -25,8 +25,9 @@ Each model file's evaluate() function uses module-level test data.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -37,6 +38,50 @@ from ..ir.energy_model import HardwareProfile
 
 _DEFAULT_SIGMA_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15]
 _DEFAULT_BIT_VALUES = [2, 4, 6, 8, 10, 12, 16]
+
+_SEED_STREAMS = {
+    "digital_baseline": 101,
+    "ideal_analog_baseline": 202,
+    "mismatch": 303,
+    "adc": 404,
+    "ablation_mismatch": 505,
+    "ablation_thermal": 606,
+    "ablation_quantization": 707,
+}
+
+
+def _trial_seed(base_seed: int | None, stream: str, sweep_index: int, trial_index: int) -> int | None:
+    if base_seed is None:
+        return None
+    stream_id = _SEED_STREAMS[stream]
+    return int((base_seed + stream_id * 1_000_003 + sweep_index * 10_007 + trial_index) % (2**31 - 1))
+
+
+def _set_eval_seed(seed: int | None) -> None:
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed % (2**32 - 1))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _evaluate_seeded(eval_fn: Callable[[nn.Module], float], model: nn.Module, seed: int | None) -> float:
+    _set_eval_seed(seed)
+    return float(eval_fn(model))
+
+
+def _baseline_trials(
+    model: nn.Module,
+    eval_fn: Callable[[nn.Module], float],
+    n_trials: int,
+    base_seed: int | None,
+    stream: str,
+) -> tuple[float, list[int | None]]:
+    seeds = [_trial_seed(base_seed, stream, 0, j) for j in range(n_trials)]
+    values = [_evaluate_seeded(eval_fn, model, seed) for seed in seeds]
+    return float(np.mean(values)), seeds
 
 
 @dataclass
@@ -50,6 +95,9 @@ class SweepResult:
     metric_name: str
     per_trial: np.ndarray           # shape: (n_sigma, n_trials)
     digital_baseline: float         # metric at sigma=0, avg over n_trials
+    ideal_analog_baseline: float | None = None  # analogized, noise-off diagnostic
+    trial_seeds: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     # Energy/latency metrics (optional, computed if hardware_profile provided)
     analog_energy_pJ: float | None = None
     digital_energy_pJ: float | None = None
@@ -90,6 +138,24 @@ class SweepResult:
             return self.std
         return self.std / abs(self.digital_baseline)
 
+    @property
+    def normalized_mean_vs_ideal_analog(self) -> np.ndarray | None:
+        """Quality normalized against the noiseless analog wrapper diagnostic."""
+        if self.ideal_analog_baseline is None:
+            return None
+        if self.ideal_analog_baseline == 0:
+            return self.mean
+        return 1.0 + (self.mean - self.ideal_analog_baseline) / abs(self.ideal_analog_baseline)
+
+    @property
+    def normalized_std_vs_ideal_analog(self) -> np.ndarray | None:
+        """Std dev normalized against the noiseless analog wrapper diagnostic."""
+        if self.ideal_analog_baseline is None:
+            return None
+        if self.ideal_analog_baseline == 0:
+            return self.std
+        return self.std / abs(self.ideal_analog_baseline)
+
     def degradation_threshold(self, max_relative_loss: float = 0.10) -> float:
         """Return the largest sigma where mean quality is within max_relative_loss of baseline.
 
@@ -107,18 +173,37 @@ class SweepResult:
                 last_passing = sigma
         return last_passing
 
+    def degradation_threshold_vs_ideal_analog(self, max_relative_loss: float = 0.10) -> float | None:
+        """Return degradation threshold normalized to the ideal analog baseline."""
+        norm = self.normalized_mean_vs_ideal_analog
+        if norm is None:
+            return None
+        threshold = 1.0 - max_relative_loss
+        last_passing = 0.0
+        for sigma, q in zip(self.sigma_values, norm):
+            if q >= threshold:
+                last_passing = sigma
+        return last_passing
+
     def to_dict(self) -> dict:
         d = {
             "sigma_values": self.sigma_values,
             "metric_name": self.metric_name,
             "per_trial": self.per_trial.tolist(),
             "digital_baseline": self.digital_baseline,
+            "ideal_analog_baseline": self.ideal_analog_baseline,
             "mean": self.mean.tolist(),
             "std": self.std.tolist(),
             "normalized_mean": self.normalized_mean.tolist(),
             "normalized_std": self.normalized_std.tolist(),
             "degradation_threshold_10pct": self.degradation_threshold(0.10),
+            "trial_seeds": self.trial_seeds,
+            "metadata": self.metadata,
         }
+        if self.normalized_mean_vs_ideal_analog is not None:
+            d["normalized_mean_vs_ideal_analog"] = self.normalized_mean_vs_ideal_analog.tolist()
+            d["normalized_std_vs_ideal_analog"] = self.normalized_std_vs_ideal_analog.tolist()
+            d["degradation_threshold_10pct_vs_ideal_analog"] = self.degradation_threshold_vs_ideal_analog(0.10)
         # Add energy/latency metrics if available
         if self.analog_energy_pJ is not None:
             d["analog_energy_pJ"] = self.analog_energy_pJ
@@ -142,6 +227,9 @@ class SweepResult:
             metric_name=d["metric_name"],
             per_trial=np.array(d["per_trial"]),
             digital_baseline=d["digital_baseline"],
+            ideal_analog_baseline=d.get("ideal_analog_baseline"),
+            trial_seeds=d.get("trial_seeds", {}),
+            metadata=d.get("metadata", {}),
             analog_energy_pJ=d.get("analog_energy_pJ"),
             digital_energy_pJ=d.get("digital_energy_pJ"),
             analog_latency_ns=d.get("analog_latency_ns"),
@@ -158,8 +246,11 @@ def mismatch_sweep(
     n_trials: int = 50,
     n_adc_bits: int = 8,
     calibration_data: torch.Tensor | None = None,
+    calibration_runner: Callable[[nn.Module], object] | None = None,
     analog_domain: str = "conservative",
     hardware_profile: HardwareProfile | None = None,
+    seed: int | None = None,
+    metadata: dict[str, Any] | None = None,
     **analog_kwargs,
 ) -> SweepResult:
     """Monte Carlo mismatch sweep.
@@ -180,59 +271,53 @@ def mismatch_sweep(
     analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=n_adc_bits, **analog_kwargs)
     configure_analog_profile(analog_model, analog_domain)
 
-    # Calibrate V_ref if data provided
-    if calibration_data is not None:
-        calibrate_analog_model(analog_model, calibration_data)
+    # Calibrate V_ref if a representative input or custom runner is provided.
+    if calibration_data is not None or calibration_runner is not None:
+        calibrate_analog_model(analog_model, calibration_data, calibration_runner=calibration_runner)
 
-    # Digital baseline: sigma=0, all noise off, multiple trials (should be deterministic
-    # except for thermal noise which is also zero at sigma=0... but thermal is always on
-    # by default. For true digital baseline we disable all noise.)
+    # Primary baseline: untouched digital model. This avoids contaminating the
+    # reference with analog wrapper transfer functions such as clipped tanh/ReLU.
+    digital_baseline, digital_baseline_seeds = _baseline_trials(
+        model, eval_fn, n_trials, seed, "digital_baseline"
+    )
+
+    # Diagnostic baseline: analogized model with all nonidealities disabled.
     set_all_noise(analog_model, thermal=False, quantization=False, mismatch=False)
-    baseline_trials = [eval_fn(analog_model) for _ in range(n_trials)]
-    digital_baseline = float(np.mean(baseline_trials))
+    ideal_analog_baseline, ideal_analog_baseline_seeds = _baseline_trials(
+        analog_model, eval_fn, n_trials, seed, "ideal_analog_baseline"
+    )
     set_all_noise(analog_model, thermal=True, quantization=True, mismatch=True)
 
+    per_trial_seeds: list[list[int | None]] = []
     for i, sigma in enumerate(sigma_values):
-        resample_all_mismatch(analog_model, sigma=sigma)
+        row_seeds = []
         for j in range(n_trials):
-            resample_all_mismatch(analog_model)  # new δ each trial
+            trial_seed = _trial_seed(seed, "mismatch", i, j)
+            row_seeds.append(trial_seed)
+            _set_eval_seed(trial_seed)
+            resample_all_mismatch(analog_model, sigma=sigma)
             per_trial[i, j] = eval_fn(analog_model)
+        per_trial_seeds.append(row_seeds)
 
-        if i % 3 == 0:
+    if i % 3 == 0:
             print(f"  sigma={sigma:.3f}: mean={per_trial[i].mean():.4f} ± {per_trial[i].std():.4f}")
 
-    # Compute energy/latency if hardware_profile provided
-    analog_energy_pJ = None
-    digital_energy_pJ = None
-    analog_latency_ns = None
-    digital_latency_ns = None
-    energy_saving_vs_digital = None
-    speedup_vs_digital = None
-
-    if hardware_profile is not None:
-        # Count model parameters as proxy for MACs
-        macs = sum(p.numel() for p in model.parameters())
-        # Compute energy
-        analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
-        digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
-        # Compute latency
-        analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
-        digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
-        # Compute ratios
-        energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
-        speedup_vs_digital = digital_latency_ns / analog_latency_ns
+    # Hardware metrics are computed via AnalogGraph.analyze(), not here.
+    # The SweepResult fields are left as None; they are populated after
+    # graph analysis by the caller (sweep_all.py).
 
     return SweepResult(
         sigma_values=sigma_values,
         metric_name="quality",
         per_trial=per_trial,
         digital_baseline=digital_baseline,
-        analog_energy_pJ=analog_energy_pJ,
-        digital_energy_pJ=digital_energy_pJ,
-        analog_latency_ns=analog_latency_ns,
-        digital_latency_ns=digital_latency_ns,
-        energy_saving_vs_digital=energy_saving_vs_digital,
-        speedup_vs_digital=speedup_vs_digital,
+        ideal_analog_baseline=ideal_analog_baseline,
+        trial_seeds={
+            "digital_baseline": digital_baseline_seeds,
+            "ideal_analog_baseline": ideal_analog_baseline_seeds,
+            "per_trial": per_trial_seeds,
+        },
+        metadata=metadata or {},
     )
 
 
@@ -243,8 +328,11 @@ def adc_sweep(
     sigma_mismatch: float = 0.05,
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
+    calibration_runner: Callable[[nn.Module], object] | None = None,
     analog_domain: str = "conservative",
     hardware_profile: HardwareProfile | None = None,
+    seed: int | None = None,
+    metadata: dict[str, Any] | None = None,
     **analog_kwargs,
 ) -> SweepResult:
     """Sweep ADC precision at fixed mismatch level.
@@ -261,56 +349,54 @@ def adc_sweep(
 
     per_trial = np.zeros((len(bit_values), n_trials), dtype=np.float64)
 
-    # Digital baseline: max bits, sigma=0, no noise
+    # Primary baseline: untouched digital model.
+    digital_baseline, digital_baseline_seeds = _baseline_trials(
+        model, eval_fn, n_trials, seed, "digital_baseline"
+    )
+
+    # Diagnostic baseline: max-bit analog wrapper with all nonidealities disabled.
     analog_model = analogize(model, sigma_mismatch=0.0, n_adc_bits=max(bit_values), **analog_kwargs)
     configure_analog_profile(analog_model, analog_domain)
-    if calibration_data is not None:
-        calibrate_analog_model(analog_model, calibration_data)
+    if calibration_data is not None or calibration_runner is not None:
+        calibrate_analog_model(analog_model, calibration_data, calibration_runner=calibration_runner)
     set_all_noise(analog_model, thermal=False, quantization=False, mismatch=False)
-    baseline_trials = [eval_fn(analog_model) for _ in range(n_trials)]
-    digital_baseline = float(np.mean(baseline_trials))
+    ideal_analog_baseline, ideal_analog_baseline_seeds = _baseline_trials(
+        analog_model, eval_fn, n_trials, seed, "ideal_analog_baseline"
+    )
 
+    per_trial_seeds: list[list[int | None]] = []
     for i, bits in enumerate(bit_values):
         analog_model = analogize(
             model, sigma_mismatch=sigma_mismatch, n_adc_bits=bits, **analog_kwargs
         )
         configure_analog_profile(analog_model, analog_domain)
-        if calibration_data is not None:
-            calibrate_analog_model(analog_model, calibration_data)
+        if calibration_data is not None or calibration_runner is not None:
+            calibrate_analog_model(analog_model, calibration_data, calibration_runner=calibration_runner)
+        row_seeds = []
         for j in range(n_trials):
+            trial_seed = _trial_seed(seed, "adc", i, j)
+            row_seeds.append(trial_seed)
+            _set_eval_seed(trial_seed)
             resample_all_mismatch(analog_model)
             per_trial[i, j] = eval_fn(analog_model)
+        per_trial_seeds.append(row_seeds)
 
         print(f"  bits={bits}: mean={per_trial[i].mean():.4f} ± {per_trial[i].std():.4f}")
 
-    # Compute energy/latency if hardware_profile provided
-    analog_energy_pJ = None
-    digital_energy_pJ = None
-    analog_latency_ns = None
-    digital_latency_ns = None
-    energy_saving_vs_digital = None
-    speedup_vs_digital = None
-
-    if hardware_profile is not None:
-        macs = sum(p.numel() for p in model.parameters())
-        analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
-        digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
-        analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
-        digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
-        energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
-        speedup_vs_digital = digital_latency_ns / analog_latency_ns
+    # Hardware metrics are computed via AnalogGraph.analyze(), not here.
 
     return SweepResult(
         sigma_values=[float(b) for b in bit_values],
         metric_name=f"quality_vs_adc_bits_sigma{sigma_mismatch:.3f}",
         per_trial=per_trial,
         digital_baseline=digital_baseline,
-        analog_energy_pJ=analog_energy_pJ,
-        digital_energy_pJ=digital_energy_pJ,
-        analog_latency_ns=analog_latency_ns,
-        digital_latency_ns=digital_latency_ns,
-        energy_saving_vs_digital=energy_saving_vs_digital,
-        speedup_vs_digital=speedup_vs_digital,
+        ideal_analog_baseline=ideal_analog_baseline,
+        trial_seeds={
+            "digital_baseline": digital_baseline_seeds,
+            "ideal_analog_baseline": ideal_analog_baseline_seeds,
+            "per_trial": per_trial_seeds,
+        },
+        metadata=metadata or {},
     )
 
 
@@ -320,8 +406,11 @@ def ablation_sweep(
     sigma_values: list[float] | None = None,
     n_trials: int = 50,
     calibration_data: torch.Tensor | None = None,
+    calibration_runner: Callable[[nn.Module], object] | None = None,
     analog_domain: str = "conservative",
     hardware_profile: HardwareProfile | None = None,
+    seed: int | None = None,
+    metadata: dict[str, Any] | None = None,
     **analog_kwargs,
 ) -> dict[str, SweepResult]:
     """Run three sweeps isolating each noise source independently.
@@ -349,14 +438,20 @@ def ablation_sweep(
         kwargs = {k: v for k, v in analog_kwargs.items() if k != "sigma_mismatch"}
         analog_model = analogize(model, sigma_mismatch=0.0, **kwargs)
         configure_analog_profile(analog_model, analog_domain)
-        if calibration_data is not None:
-            calibrate_analog_model(analog_model, calibration_data)
+        if calibration_data is not None or calibration_runner is not None:
+            calibrate_analog_model(analog_model, calibration_data, calibration_runner=calibration_runner)
+        digital_baseline, digital_baseline_seeds = _baseline_trials(
+            model, eval_fn, n_trials, seed, "digital_baseline"
+        )
         set_all_noise(analog_model, thermal=False, quantization=False, mismatch=False)
-        baseline_trials = [eval_fn(analog_model) for _ in range(n_trials)]
-        digital_baseline = float(np.mean(baseline_trials))
+        ideal_analog_baseline, ideal_analog_baseline_seeds = _baseline_trials(
+            analog_model, eval_fn, n_trials, seed, "ideal_analog_baseline"
+        )
         set_all_noise(analog_model, **noise_cfg)
 
+        per_trial_seeds: list[list[int | None]] = []
         for i, sigma in enumerate(sigma_values):
+            row_seeds = []
             if name in ("mismatch",):
                 # For mismatch-only: sigma is the mismatch level
                 resample_all_mismatch(analog_model, sigma=sigma)
@@ -364,38 +459,28 @@ def ablation_sweep(
             # but we still vary sigma for the x-axis to match the figure
 
             for j in range(n_trials):
+                trial_seed = _trial_seed(seed, f"ablation_{name}", i, j)
+                row_seeds.append(trial_seed)
+                _set_eval_seed(trial_seed)
                 if name == "mismatch":
-                    resample_all_mismatch(analog_model)
+                    resample_all_mismatch(analog_model, sigma=sigma)
                 per_trial[i, j] = eval_fn(analog_model)
+        per_trial_seeds.append(row_seeds)
 
-        # Compute energy/latency if hardware_profile provided
-        analog_energy_pJ = None
-        digital_energy_pJ = None
-        analog_latency_ns = None
-        digital_latency_ns = None
-        energy_saving_vs_digital = None
-        speedup_vs_digital = None
-
-        if hardware_profile is not None:
-            macs = sum(p.numel() for p in model.parameters())
-            analog_energy_pJ = macs * hardware_profile.analog_mac_energy_pJ
-            digital_energy_pJ = macs * hardware_profile.digital_mac_energy_pJ
-            analog_latency_ns = macs / hardware_profile.analog_mac_throughput * 1e9
-            digital_latency_ns = macs / hardware_profile.digital_mac_throughput * 1e9
-            energy_saving_vs_digital = 1.0 - analog_energy_pJ / digital_energy_pJ
-            speedup_vs_digital = digital_latency_ns / analog_latency_ns
+        # Hardware metrics are computed via AnalogGraph.analyze(), not here.
 
         results[name] = SweepResult(
             sigma_values=sigma_values,
             metric_name=f"quality_{name}_only",
             per_trial=per_trial,
             digital_baseline=digital_baseline,
-            analog_energy_pJ=analog_energy_pJ,
-            digital_energy_pJ=digital_energy_pJ,
-            analog_latency_ns=analog_latency_ns,
-            digital_latency_ns=digital_latency_ns,
-            energy_saving_vs_digital=energy_saving_vs_digital,
-            speedup_vs_digital=speedup_vs_digital,
+            ideal_analog_baseline=ideal_analog_baseline,
+            trial_seeds={
+                "digital_baseline": digital_baseline_seeds,
+                "ideal_analog_baseline": ideal_analog_baseline_seeds,
+                "per_trial": per_trial_seeds,
+            },
+            metadata={**(metadata or {}), "ablation_noise": name},
         )
 
     return results

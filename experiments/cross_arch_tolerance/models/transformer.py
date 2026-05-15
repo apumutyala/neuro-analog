@@ -174,11 +174,11 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
-def evaluate(model: nn.Module) -> float:
-    """Return negative cross-entropy loss (continuous metric, higher = better).
+def evaluate(model: nn.Module, substrate: str | None = None) -> float:
+    """Return classification accuracy in [0, 1] (higher = better).
     
-    Cross-entropy measures the full logit distribution, not just argmax.
-    Degrades smoothly with analog noise because logit magnitudes matter.
+    Accuracy is the fraction of correct predictions on the test set.
+    More robust and interpretable than negative loss.
     """
     _, _, X_test, y_test = _get_data()
     X_test, y_test = X_test.to(_DEVICE), y_test.to(_DEVICE)
@@ -186,14 +186,16 @@ def evaluate(model: nn.Module) -> float:
     model.eval()
     with torch.no_grad():
         logits = model(X_test)
-        loss = nn.functional.cross_entropy(logits, y_test)
-    return -loss.item()  # Negative so higher = better
+        predictions = logits.argmax(dim=-1)
+        correct = (predictions == y_test).float()
+        accuracy = correct.mean().item()
+    return accuracy  # Accuracy in [0, 1], higher = better
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline outputs.
     
-    Returns negative MSE so higher = better (consistent with other metrics).
+    Returns positive MSE value (lower = better for MSE).
     """
     _, _, X_test, y_test = _get_data()
     X_test = X_test.to(_DEVICE)
@@ -207,7 +209,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module) -> float:
         analog_out = model(X_test)
     
     mse = ((dig_out - analog_out) ** 2).mean().item()
-    return -mse
+    return mse  # Positive MSE, lower = better
 
 
 def get_family_name() -> str:

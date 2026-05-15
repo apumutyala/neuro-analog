@@ -8,6 +8,7 @@ in the pilot study:
 - Multi-step ADC accumulation (diffusion)
 """
 
+from neuro_analog.ir.energy_model import dynamics_penalty
 from neuro_analog.ir.types import AnalogAmenabilityProfile, DynamicsProfile
 
 
@@ -64,7 +65,7 @@ def classify_failure_mode(profile: AnalogAmenabilityProfile) -> str:
     is_single_pass = (
         profile.analog_flop_fraction > 0.7
         and boundary_density < 0.5
-        and profile.dynamics_penalty() < 0.3  # Low dynamics penalty
+        and dynamics_penalty(profile.dynamics) < 0.3  # Low dynamics penalty
     )
     
     if is_single_pass:
@@ -100,7 +101,7 @@ def print_heuristic_report(profile: AnalogAmenabilityProfile) -> None:
     print(f"Analog FLOP fraction: {profile.analog_flop_fraction:.1%}")
     print(f"D/A boundary density: {boundary_density:.2f} ({profile.da_boundary_count} boundaries / {layer_count} layers)")
     print(f"Dynamics type: {profile.dynamics.dynamics_type}")
-    print(f"Dynamics penalty: {profile.dynamics_penalty():.2f}")
+    print(f"Dynamics penalty: {dynamics_penalty(profile.dynamics):.2f}")
     print(f"Min weight precision: {profile.min_weight_precision_bits} bits")
     
     if profile.sigma_10pct > 0:

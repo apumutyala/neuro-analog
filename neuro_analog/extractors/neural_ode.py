@@ -449,6 +449,7 @@ class NeuralODEExtractor(BaseExtractor):
             INTEGRATION (ODE Euler step: x += dt * dx/dt, ANALOG capacitor)
               ↓ [loop back — analog feedback]
         """
+        seq_len = self._get_seq_len()
         f_theta = self._get_f_theta()
         assert f_theta is not None, "No model loaded — call load_model() or use from_module()"
 
@@ -480,7 +481,7 @@ class NeuralODEExtractor(BaseExtractor):
                                       weight_min=ws.get("min", 0.0), weight_max=ws.get("max", 0.0),
                                       weight_std=ws.get("std", 0.0))
 
-            node = make_mvm_node(f"f_theta.linear_{idx}", in_f, out_f, precision=precision)
+            node = make_mvm_node(f"f_theta.linear_{idx}", in_f, out_f, precision=precision, seq_len=seq_len)
             node.metadata["layer_name"] = name
             node.metadata["fits_single_crossbar"] = (in_f <= 256 and out_f <= 256)
             node.metadata["weight_required_bits"] = bits
@@ -500,7 +501,7 @@ class NeuralODEExtractor(BaseExtractor):
                     domain=domain,
                     input_shape=(out_f,),
                     output_shape=(out_f,),
-                    flops=out_f,
+                    seq_len=seq_len, flops=seq_len * (out_f),
                     metadata={"activation": act_str, "analog_native": domain == Domain.ANALOG},
                 )
                 anid = graph.add_node(act_node)
@@ -515,7 +516,7 @@ class NeuralODEExtractor(BaseExtractor):
             domain=Domain.ANALOG,
             input_shape=(self.state_dim,),
             output_shape=(self.state_dim,),
-            flops=2 * self.state_dim,
+            seq_len=seq_len, flops=seq_len * (2 * self.state_dim),
             metadata={
                 "description": "x_{t+dt} = x_t + dt * f_theta — capacitor charge integration",
                 "t_start": self.t_span[0],

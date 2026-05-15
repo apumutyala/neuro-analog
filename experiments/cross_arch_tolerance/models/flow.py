@@ -130,7 +130,7 @@ def load_model(save_path: str) -> nn.Module:
 _EVAL_SEED = 42  # Fixed seed for z0 sampling — eliminates baseline variance from z0
 
 
-def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
+def evaluate(model: nn.Module, analog_substrate: str = "euler", substrate: str | None = None) -> float:
     """Generate samples with 4 Euler steps, compute negative sliced Wasserstein distance.
 
     Uses sliced Wasserstein (average over 50 random 1D projections) instead of
@@ -206,7 +206,7 @@ def evaluate_sliced_wasserstein(model: nn.Module, n_projections: int = 50, seed:
     return -float(np.mean(distances))
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler") -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler", substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline generated samples.
     
     Returns negative MSE so higher = better (consistent with other metrics).
@@ -225,7 +225,43 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
     analog_samples = analog_odeint(model, z0, t_span, dt=0.01, noise_sigma=noise_sigma)
     
     mse = ((dig_samples.detach() - analog_samples.detach()) ** 2).mean().item()
-    return -mse
+    return mse  # Positive MSE, lower = better
+
+
+def dynamics_metrics(model: nn.Module) -> dict:
+    """Return flow-specific dynamics diagnostics for analog sweep logging.
+
+    Computes:
+      - lipschitz_proxy: max ||v_theta(t, x1) - v_theta(t, x2)|| / ||x1 - x2||
+        over random pairs, approximating the Lipschitz constant of the velocity field.
+      - straightness_proxy: mean ||v(t, x_t) - (x1 - x0)||^2 / mean ||x1 - x0||^2
+        over random straight-line interpolants. 0 = perfectly straight (ideal rectified flow).
+    """
+    device = next(model.parameters()).device
+    model.eval()
+    metrics = {"lipschitz_proxy": 0.0, "straightness_proxy": 0.0}
+    n_samples = 256
+    with torch.no_grad():
+        x0 = torch.randn(n_samples, 2, device=device)
+        x1 = torch.randn(n_samples, 2, device=device)
+        t = torch.rand(n_samples, device=device)
+
+        # Lipschitz proxy: velocity difference over spatial difference
+        eps = 0.01
+        v1 = model(t, x0)
+        v2 = model(t, x0 + eps * torch.randn_like(x0))
+        dx = (eps * torch.randn_like(x0)).norm(dim=-1)
+        dv = (v2 - v1).norm(dim=-1)
+        lipschitz = (dv / (dx + 1e-8)).max().item()
+        metrics["lipschitz_proxy"] = float(lipschitz)
+
+        # Straightness proxy: how close to constant velocity (x1 - x0)
+        x_t = (1 - t.unsqueeze(-1)) * x0 + t.unsqueeze(-1) * x1
+        v_t = model(t, x_t)
+        target = x1 - x0
+        straightness = ((v_t - target) ** 2).mean().item() / (target ** 2).mean().item()
+        metrics["straightness_proxy"] = float(straightness)
+    return metrics
 
 
 def get_family_name() -> str:

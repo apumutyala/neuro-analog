@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 import math
 
 from neuro_analog.ir import AnalogGraph, OpType, NoiseSpec
@@ -29,4 +30,4 @@ class IntegratorMapper:
         
         for node in graph.nodes:
             if node.op_type in (OpType.INTEGRATION, OpType.DECAY):
-                node.noise = noise
+                node.noise = replace(noise)

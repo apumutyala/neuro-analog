@@ -144,7 +144,7 @@ def load_model(save_path: str) -> nn.Module:
     return model
 
 
-def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
+def evaluate(model: nn.Module, analog_substrate: str = "euler", substrate: str | None = None) -> float:
     """Compute log-likelihood on test set. Higher = better.
 
     Args:
@@ -193,7 +193,7 @@ def evaluate(model: nn.Module, analog_substrate: str = "euler") -> float:
     return float(log_px.mean().item())  # log-likelihood (higher = better)
 
 
-def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler") -> float:
+def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_substrate: str = "euler", substrate: str | None = None) -> float:
     """Compute MSE between analog and digital baseline outputs.
     
     Args:
@@ -221,7 +221,7 @@ def evaluate_output_mse(model: nn.Module, digital_baseline: nn.Module, analog_su
         z0_analog, _ = analog_odeint_with_logdet(model, X_test.requires_grad_(True), t_span, dt=dt, noise_sigma=noise_sigma)
     
     mse = ((z0_dig.detach() - z0_analog.detach()) ** 2).mean().item()
-    return -mse  # Negative so higher = better
+    return mse  # Positive MSE, lower = better
 
 
 def get_family_name() -> str:

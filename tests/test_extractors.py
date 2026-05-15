@@ -344,6 +344,8 @@ class TestMambaEdges:
         ext.device = "cpu"
         ext.model = FakeModel()
         ext._graph = None
+        ext.seq_len = None  # BaseExtractor normally sets this in __init__
+        ext._activation_specs = None
 
         graph = ext.build_graph()
         # Expect edges from layer_0.residual → layer_1.in_proj, etc.

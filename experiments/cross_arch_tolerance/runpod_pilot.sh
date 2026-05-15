@@ -50,7 +50,7 @@ python -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.cud
 echo ""
 echo "[1/6] Training all pilot models..."
 cd "${EXP_DIR}"
-python train_all.py
+python train_all.py --force
 
 # Verify checkpoints exist
 for arch in neural_ode transformer diffusion flow ebm deq ssm; do
@@ -59,16 +59,46 @@ for arch in neural_ode transformer diffusion flow ebm deq ssm; do
         exit 1
     fi
 done
-echo "  All checkpoints verified."
+echo "  All standard checkpoints verified."
+
+# 1b. HWA training (noise-aware robustness)
+echo ""
+echo "[1b/6] Hardware-aware training all pilot models..."
+python train_hwa.py --force
+for arch in neural_ode transformer diffusion flow ebm deq ssm; do
+    if [[ ! -f "${CKPT_DIR}/${arch}_hwa.pt" ]]; then
+        echo "ERROR: Missing HWA checkpoint for ${arch}" >&2
+        exit 1
+    fi
+done
+echo "  All HWA checkpoints verified."
 
 # ---------------------------------------------------------------------------
-# 2. Main sweep matrix: all substrates × both domains
+# 2. Main sweep matrix: all three substrates × both domains + harnessing
 # ---------------------------------------------------------------------------
+for substrate in pcm reram capacitive; do
+    echo ""
+    echo "[2/6] Running full sweep matrix (domain=both, substrate=${substrate}, n_trials=${N_TRIALS_MAIN})..."
+    python sweep_all.py \
+        --analog-domain both \
+        --physical-substrate "${substrate}" \
+        --n-trials "${N_TRIALS_MAIN}" \
+        --force
+done
+
 echo ""
-echo "[2/6] Running full sweep matrix (substrates=all, domains=both, n_trials=${N_TRIALS_MAIN})..."
+echo "[2b/6] Running acceleration sweep (speedup/energy metrics)..."
 python sweep_all.py \
-    --analog-substrate all \
+    --compute-harnessing \
+    --n-trials "${N_TRIALS_MAIN}" \
+    --force
+
+echo ""
+echo "[2c/6] Running HWA sweep matrix (domain=both, substrate=PCM, n_trials=${N_TRIALS_MAIN})..."
+python sweep_all.py \
     --analog-domain both \
+    --physical-substrate pcm \
+    --hwa \
     --n-trials "${N_TRIALS_MAIN}" \
     --force
 
@@ -105,8 +135,11 @@ echo "[5/6] Generating figures..."
 # Core figures from sweep results (default domain=conservative)
 python plot_results.py
 
-# Substrate comparison figure (uses existing results)
-python plot_substrate_comparison.py
+# Substrate comparison figure (uses existing substrate sweep results if available)
+python plot_results.py --fig 13
+
+# Harnessing figure
+python plot_results.py --fig 12
 
 # Heatmaps (analog/digital partition maps)
 python plot_heatmaps.py
@@ -139,7 +172,7 @@ echo "To download to your local machine:"
 echo "  scp root@<runpod-ip>:${OUTPUT_TAR} ."
 echo ""
 echo "Key outputs:"
-echo "  - results/           : All JSON sweep results (mismatch, ablation, ADC, MSE, profiles)"
-echo "  - figures/           : fig1–fig9, heatmaps, transient stability"
-echo "  - checkpoints/       : Trained model weights"
+echo "  - results/           : All JSON sweep results (mismatch, ablation, ADC, MSE, profiles, acceleration, HWA)"
+echo "  - figures/           : fig1–fig13, heatmaps, transient stability"
+echo "  - checkpoints/       : Trained model weights (standard + HWA)"
 echo "========================================"

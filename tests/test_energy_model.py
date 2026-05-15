@@ -15,9 +15,10 @@ import tempfile
 import yaml
 
 from neuro_analog.ir.types import (
-    AnalogNode, AnalogAmenabilityProfile, ArchitectureFamily, DynamicsProfile,
+    AnalogAmenabilityProfile, ArchitectureFamily, DynamicsProfile,
     Domain, OpType, PrecisionSpec
 )
+from neuro_analog.ir.node import AnalogNode
 from neuro_analog.ir.energy_model import (
     HardwareProfile, estimate_node_cost, dynamics_penalty, compute_amenability_score
 )
@@ -124,8 +125,8 @@ class TestEstimateNodeCost:
         
         estimate = estimate_node_cost(node, profile)
         
-        # Energy = MACs * digital_mac_energy_pJ
-        expected_energy = (256 * 128) * profile.digital_mac_energy_pJ
+        # Energy = flops * digital_mac_energy_pJ (fallback path for digital MVM)
+        expected_energy = (2 * 256 * 128) * profile.digital_mac_energy_pJ
         assert estimate.energy_pJ == pytest.approx(expected_energy)
     
     def test_integration_node(self):

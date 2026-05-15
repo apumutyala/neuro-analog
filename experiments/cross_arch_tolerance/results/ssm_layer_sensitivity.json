@@ -1,70 +1,70 @@
 {
   "sigma": 0.05,
-  "n_trials": 20,
-  "baseline": -0.25741586089134216,
+  "n_trials": 50,
+  "baseline": 0.9290000200271606,
   "layers": {
     "layers.0": {
       "type": "_S4DLayer",
-      "mean": -0.25742767453193666,
-      "std": 7.572575327947512e-05,
-      "normalized_mean": 1.0000458932116831,
-      "degradation": -4.589321168313454e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.0.B": {
       "type": "AnalogLinear",
-      "mean": -0.25740507543087005,
-      "std": 9.178275368512804e-05,
-      "normalized_mean": 0.9999581010259633,
-      "degradation": 4.189897403672482e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.0.C": {
       "type": "AnalogLinear",
-      "mean": -0.25743613243103025,
-      "std": 6.30561095092562e-05,
-      "normalized_mean": 1.000078750157888,
-      "degradation": -7.875015788805229e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.0.D": {
       "type": "AnalogLinear",
-      "mean": -0.25744825452566145,
-      "std": 0.00020256653971217713,
-      "normalized_mean": 1.0001258416408652,
-      "degradation": -0.00012584164086515415
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.1": {
       "type": "_S4DLayer",
-      "mean": -0.25740688741207124,
-      "std": 8.791492796467603e-05,
-      "normalized_mean": 0.9999651401462215,
-      "degradation": 3.4859853778490546e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.1.B": {
       "type": "AnalogLinear",
-      "mean": -0.257406023144722,
-      "std": 0.00010297384706136268,
-      "normalized_mean": 0.9999617826710985,
-      "degradation": 3.8217328901524183e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.1.C": {
       "type": "AnalogLinear",
-      "mean": -0.25741977840662,
-      "std": 5.836705785334186e-05,
-      "normalized_mean": 1.000015218624308,
-      "degradation": -1.5218624308088735e-05
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "layers.1.D": {
       "type": "AnalogLinear",
-      "mean": -0.2573479950428009,
-      "std": 0.00013167321814049746,
-      "normalized_mean": 0.9997363571603309,
-      "degradation": 0.0002636428396690649
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     },
     "head": {
       "type": "AnalogLinear",
-      "mean": -0.25751218646764756,
-      "std": 0.0003662463475433064,
-      "normalized_mean": 1.000374202179974,
-      "degradation": -0.0003742021799739703
+      "mean": 0.9290000200271606,
+      "std": 0.0,
+      "normalized_mean": 1.0,
+      "degradation": 0.0
     }
   }
 }
