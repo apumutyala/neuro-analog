@@ -2,8 +2,6 @@
 
 A framework for co-designing analog hardware with modern neural network architectures. This codebase bridges hardware and neural architects by decomposing neural networks into circuit-level primitives. Hardware architects learn what computational patterns their substrates can support; neural architects learn how their models will behave on analog hardware.
 
-1-Page Abstract: 
-
 ## Quick Start
 
 Install and run a basic analog sweep in 2 minutes:
