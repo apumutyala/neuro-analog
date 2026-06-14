@@ -22,7 +22,8 @@ For specialized deep-dives on specific topics:
 - `notebooks/architecture_families.ipynb` - Computational patterns and analog amenability across 7 architecture families
 - `notebooks/intermediate_representation.ipynb` - IR system, graph construction, and hardware annotation
 - `notebooks/amenability_analysis.ipynb` - Amenability scoring, failure modes, and design recommendations
-- `notebooks/ark_export.ipynb` - Ark export pipeline for analog circuit compilation
+
+For compiling trained models to analog circuits, see the [Analog Circuit Export (Ark Bridge)](#analog-circuit-export-ark-bridge) section.
 
 ## What This Does
 
@@ -43,6 +44,7 @@ We simulate physics-grounded analog effects (conductance mismatch, thermal noise
 - Unified benchmark training: pending, awaiting compute resources
 - Circuit-mode defaults: sweeps default to rc_integrator/hopfield for true analog measurement
 - Energy/latency modeling: included in all sweep results
+- Ark circuit export: ground-up bridge in `neuro_analog/revised_ark_bridge/` compiles six model families to analog circuits, each verified against its PyTorch oracle
 
 ## How It Works
 
@@ -91,6 +93,30 @@ print(f"Speedup vs digital: {result.speedup_vs_digital:.1f}x")
 ```
 
 Hardware constants are sourced from IBM PCM modeling, AIMC surveys, and SRAM IMC benchmarks.
+
+## Analog Circuit Export (Ark Bridge)
+
+`neuro_analog/revised_ark_bridge/` compiles a trained PyTorch dynamics model into an Ark analog circuit (`BaseAnalogCkt`) for circuit-level co-design. Each family is lowered to a Circuit Dependency Graph (CDG) and compiled to a differentiable JAX/diffrax solver, with per-weight conductance mismatch applied at the device level.
+
+Two lowering paths cover six families:
+- CDG-native (`cdg_native/`): DEQ, EBM, and SSM map onto reusable CDGSpec factories (e.g. the additive-recurrent Hopfield form).
+- Plain fallback (`plain_fallback/`): Neural ODE, Flow, and Diffusion lower through a direct MLP vector-field circuit.
+
+Every export is checked against the original PyTorch model as the oracle (`verify.py`): circuit trajectories are compared to the model's own dynamics (DEQ fixed point, ODE integration, EBM mean-field relaxation, or CLD step).
+
+```python
+from neuro_analog.revised_ark_bridge import build_deq, verify_family, solve_with_mismatch
+
+ckt = build_deq(deq_model, mismatch_sigma=0.05)        # trained DEQ -> BaseAnalogCkt
+err = verify_family("deq", ckt, deq_model, x_input=x, z0=z0)   # max trajectory error vs oracle
+traj = solve_with_mismatch(ckt, z0, sigma=0.05, seed=0)        # one device-mismatch realization
+```
+
+This path requires the Ark framework (JAX, diffrax, equinox). Notebook walkthroughs live in `neuro_analog/revised_ark_bridge/notebooks/` (CDG-native families, plain-fallback families, the CDG-to-circuit compiler, and why softmax attention is analog-hostile). Validate the environment and full compile/solve/mismatch/gradient path with:
+
+```bash
+python neuro_analog/revised_ark_bridge/smoke_test.py
+```
 
 ## Usage
 
@@ -177,6 +203,7 @@ neuro_analog/
   ir/                 # Intermediate representation and energy modeling
   extractors/         # Architecture-specific IR builders
   analysis/           # Precision and profiling tools
+  revised_ark_bridge/ # Compile trained models to Ark analog circuits (CDG-native + plain fallback)
 experiments/
   cross_arch_tolerance/  # Pilot study
   unified_benchmark/     # CIFAR-10 and WikiText-2 benchmark
@@ -187,8 +214,9 @@ notebooks/
   architecture_families.ipynb   # Deep dive on 7 architecture families
   intermediate_representation.ipynb  # Deep dive on IR system
   amenability_analysis.ipynb    # Deep dive on amenability scoring
-  ark_export.ipynb              # Deep dive on Ark export pipeline
 ```
+
+The Ark circuit-export bridge and its walkthrough notebooks live under `neuro_analog/revised_ark_bridge/` (see the Analog Circuit Export section above).
 
 ## For Hardware Architects
 
@@ -206,7 +234,7 @@ Use this codebase to:
 - Identify analog-incompatible operations in your architecture (see `notebooks/intermediate_representation.ipynb`)
 - Estimate energy/latency gains from analog deployment
 - Compare analog tolerance across architecture families (see `notebooks/architecture_families.ipynb`)
-- Export ODE-based models to analog circuits (see `notebooks/ark_export.ipynb`)
+- Export trained models to analog circuits (see the [Analog Circuit Export (Ark Bridge)](#analog-circuit-export-ark-bridge) section)
 
 ## Citation
 

@@ -91,7 +91,8 @@ def run_pipeline(
         # Use S4DMLPExtractor directly for SSM — it embeds real trained weights.
         # The generic pipeline does not carry a reference to the raw _S4DLayer,
         # so SSM ark export should be done via S4DMLPExtractor.export_to_ark()
-        # (see examples/11_ssm_ark.py).
+        # (see neuro_analog/revised_ark_bridge/cdg_native/ssm.py for the current
+        # in-memory SSM circuit builder).
         pass
 
     print(f"--- PIPELINE DONE ---")
