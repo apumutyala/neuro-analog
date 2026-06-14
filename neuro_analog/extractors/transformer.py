@@ -16,11 +16,13 @@ Analog partition for a standard transformer block:
   - FFN layer 2:       ANALOG (large MVM → crossbar 4d×d)
   - LayerNorm/RMSNorm: DIGITAL
 
-FAVOR+ kernel attention (IBM, Nature MI 2024):
+FAVOR+ kernel attention (Performer; Choromanski et al., ICLR 2021):
   Replaces softmax(QK^T/√d)·V with φ(Q)·(φ(K)^T·V)
   where φ(x) = exp(x^T w_i) for random projections w_i ~ N(0,I/√d).
-  The w_i matrices are STATIC → programmable crossbar.
-  This raises analog fraction to ~90-95% at <1% accuracy cost.
+  The w_i matrices are STATIC → programmable crossbar. This shifts the
+  data-dependent softmax/QK^T digital FLOPs into static random-feature MVMs,
+  raising the analog FLOP-fraction. Accuracy impact is task-dependent
+  (see Performer; not a fixed bound).
 """
 
 from __future__ import annotations
@@ -85,10 +87,11 @@ class TransformerExtractor(BaseExtractor):
       - DiT, ViT (vision transformers)
       - Any AutoModel-compatible checkpoint
 
-    FAVOR+ kernel attention:
+    FAVOR+ kernel attention (Performer; Choromanski et al., ICLR 2021):
       Set use_favor_plus=True to replace attention softmax with static
-      random-feature projections. Raises analog fraction by ~10-15%
-      at <1% accuracy cost.
+      random-feature projections, moving the dynamic softmax/QK^T FLOPs onto
+      static crossbars and raising the analog FLOP-fraction. Accuracy impact
+      is task-dependent (see Performer).
     """
 
     def __init__(
@@ -205,9 +208,9 @@ class TransformerExtractor(BaseExtractor):
                 seq_len=seq_len,
                 flops=seq_len * 2 * dim * self.num_favor_features,
                 metadata={
-                    "description": "FAVOR+ kernel attention (IBM NMI 2024)",
+                    "description": "FAVOR+ kernel attention (Performer; Choromanski et al., ICLR 2021)",
                     "num_features": self.num_favor_features,
-                    "accuracy_cost": "<1% vs softmax",
+                    "accuracy_cost": "task-dependent (see Performer); not a fixed bound",
                 },
             ))
         else:
