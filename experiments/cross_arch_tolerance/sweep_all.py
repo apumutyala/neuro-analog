@@ -528,6 +528,7 @@ def sweep_one(
     physical_substrate: str | None = None,
     hwa: bool = False,
     compute_harnessing: bool = False,
+    backend: str = "python",
 ) -> None:
     sigma_values = sigma_values if sigma_values is not None else _SIGMA_VALUES
     adc_bits = adc_bits if adc_bits is not None else _BIT_VALUES
@@ -568,6 +569,23 @@ def sweep_one(
         eval_fn = lambda m, _s=analog_substrate: module.evaluate(m, analog_substrate=_s)
     else:
         eval_fn = module.evaluate
+
+    # ── Fused backend wrapper: deep-copy analog model, replace AnalogLinear →
+    #    AnalogLinearFused before each evaluation. This keeps the original
+    #    analog model intact for resample_all_mismatch() in the inner loop.
+    # ─────────────────────────────────────────────────────────────────────
+    if backend != "python":
+        original_eval_fn = eval_fn
+        def fused_eval_fn(m):
+            from neuro_analog.kernels.integration import replace_analog_layers
+            has_analog = any(type(mod).__name__ == "AnalogLinear" for mod in m.modules())
+            if not has_analog:
+                return original_eval_fn(m)
+            import copy
+            m_copy = copy.deepcopy(m)
+            m_copy = replace_analog_layers(m_copy, substrate=None)
+            return original_eval_fn(m_copy)
+        eval_fn = fused_eval_fn
 
     # Get calibration data (small batch of inputs)
     if hasattr(module, '_get_data'):
@@ -706,7 +724,10 @@ def sweep_one(
                     calibrate_analog_model(analog_model, calib_data_to_use, calibration_runner=calibration_runner)
                 resample_all_mismatch(analog_model, sigma=sigma)
 
-                # Call evaluate_output_mse
+                if backend != "python":
+                    from neuro_analog.kernels.integration import replace_analog_layers
+                    analog_model = replace_analog_layers(analog_model, substrate=None)
+
                 if name in _SUBSTRATE_AWARE:
                     mse_val = module.evaluate_output_mse(analog_model, digital_model, analog_substrate=analog_substrate)
                 else:
@@ -878,6 +899,16 @@ def main():
         "--hwa", action="store_true",
         help="Load hardware-aware trained checkpoints ({name}_hwa.pt) instead of standard checkpoints.",
     )
+    parser.add_argument(
+        "--backend", type=str, default="python",
+        choices=["python", "triton", "cuda"],
+        help=(
+            "Kernel backend for analog layers. "
+            "python: original PyTorch sequential ops (reference). "
+            "triton: fused Triton kernel (fastest, no build needed). "
+            "cuda: fused CUDA kernel (requires nvcc build)."
+        ),
+    )
     args = parser.parse_args()
 
     domains = ["conservative", "full_analog"] if args.analog_domain == "both" else [args.analog_domain]
@@ -914,7 +945,8 @@ def main():
                           adc_bits=adc_bits, adc_only=args.adc_only,
                           seed=args.seed, physical_substrate=args.physical_substrate,
                           hwa=args.hwa,
-                          compute_harnessing=args.compute_harnessing)
+                          compute_harnessing=args.compute_harnessing,
+                          backend=args.backend)
 
     print(f"\nAll sweeps done in {time.time()-total_t0:.0f}s")
     print(f"Results in: {_RESULTS_DIR}")
