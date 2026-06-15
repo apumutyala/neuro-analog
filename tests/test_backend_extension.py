@@ -1,9 +1,8 @@
 """Regression tests for backend extension: ensure existing analog-only paths are preserved.
 
-This test suite validates that adding TargetBackend enum and backend-specific scoring
-does not corrupt existing analog amenability analysis. Per the council transcript:
-"Extend test_ir.py and test_ark_export.py to assert that all 6 current Ark-export
-graphs pass their analog fidelity checks end-to-end."
+This test suite validates that adding the TargetBackend enum and backend-specific
+scoring does not corrupt existing analog amenability analysis. It asserts that the
+current Ark-export graphs still pass their analog fidelity checks end-to-end.
 
 These tests capture the current analog-only behavior as a baseline. After the IR
 extension, these tests must pass unchanged.
@@ -28,9 +27,9 @@ from neuro_analog.ir.graph import AnalogGraph
 def test_hybrid_domain_means_approximation_quality():
     """HYBRID must mean 'analog-possible with accuracy tradeoff', not 'mixed-signal RTL'.
     
-    This is the semantic collision identified in the council transcript. Domain.HYBRID
-    is used in amenability scoring as an approximation quality signal. Reusing it to
-    mean RTL domain-crossing would silently corrupt all existing scoring logic.
+    This guards against a semantic collision: Domain.HYBRID is used in amenability
+    scoring as an approximation quality signal. Reusing it to mean RTL domain-crossing
+    would silently corrupt all existing scoring logic.
     """
     # Create a HYBRID node (e.g., KERNEL_ATTENTION)
     hybrid_node = AnalogNode(
